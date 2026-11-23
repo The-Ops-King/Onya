@@ -1,36 +1,49 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
-import { CSMS, SECTIONS, FLAGS, HEALTH, DATA_MAP, OPEN_QUESTIONS, TODAY } from '@/lib/config';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { CSMS, SECTIONS, FLAGS, HEALTH, DATA_MAP, OPEN_QUESTIONS, TODAY, PITCH_RESULTS, UPSELL_TYPES, STEPS, EXPECTED } from '@/lib/config';
 import { getCsmData } from '@/lib/mock';
-import { computeWrites, missingRequired, complianceAlerts, isVisible } from '@/lib/writes';
+import { buildQuestions, computeWrites, missingRequired, complianceAlerts, callHeld } from '@/lib/writes';
 
-const PROV_LABEL = { ai: 'AI', airtable: 'Airtable', calendar: 'Calendar', edited: 'Edited', empty: 'Needs input' };
 const SRC_ICON = { fathom: '🎥', sms: '💬', call: '📞', calendar: '📅' };
+const QUICK_MS = 5000; // confirmed faster than this with zero edits = "quick confirm"
 const fmtDate = (d) => (d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '');
 const healthOf = (v) => HEALTH.find((h) => h.v === Number(v));
+const secs = (ms) => (ms == null ? '—' : `${Math.round(ms / 1000)}s`);
 
 function initState(csm) {
   const data = getCsmData(csm);
   const cards = {};
   for (const t of data.touches) {
-    cards[t.id] = { values: { ...t.values }, prov: { ...t.prov }, flags: JSON.parse(JSON.stringify(t.flags || {})), confirmed: false, open: true };
+    cards[t.id] = {
+      values: { ...t.values },
+      prov: { ...t.prov },
+      flags: JSON.parse(JSON.stringify(t.flags || {})),
+      confirmed: false,
+      open: true,
+      showIssues: !!t.values.issues,
+      showFlags: false,
+      showDetails: false,
+      // behind-the-scenes timing
+      seenAt: null,
+      confirmedAt: null,
+      edits: 0,
+    };
   }
-  return { data, cards };
+  return { data, cards, openedAt: Date.now() };
 }
 
 export default function Page() {
   const [tab, setTab] = useState('form');
   const [csm, setCsm] = useState('Tristan');
-  const [{ data, cards }, setState] = useState(() => initState('Tristan'));
-  const [day, setDay] = useState({ wins: '', blockers: '', improvement: '' });
+  const [state, setState] = useState(() => initState('Tristan'));
   const [review, setReview] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [submittedAt, setSubmittedAt] = useState(null);
+  const { data, cards } = state;
 
   useEffect(() => {
     setState(initState(csm));
-    setSubmitted(false);
-    setDay({ wins: '', blockers: '', improvement: '' });
+    setSubmittedAt(null);
   }, [csm]);
 
   const update = (id, fn) => setState((s) => ({ ...s, cards: { ...s.cards, [id]: fn(s.cards[id]) } }));
@@ -39,32 +52,15 @@ export default function Page() {
     update(id, (c) => {
       const values = { ...c.values, [key]: val };
       const flags = { ...c.flags };
-      // "Sold" on a pitch auto-toggles the upsell flag
-      if ((key === 'affirmResult' || key === 'aeoResult') && val === 'Sold') {
-        flags.upsell = { on: true, type: key === 'affirmResult' ? 'Financing' : 'SEO + AEO', amount: flags.upsell?.amount || '', prov: 'edited' };
+      if ((key === 'affirmResult' || key === 'aeoResult') && val === 'Sold' && !flags.upsell?.on) {
+        flags.upsell = { on: true, type: key === 'affirmResult' ? 'Financing' : 'SEO + AEO', amount: '' };
       }
-      return { ...c, values, flags, prov: { ...c.prov, [key]: 'edited' } };
+      const wasAi = c.prov[key] === 'ai';
+      return { ...c, values, flags, prov: { ...c.prov, [key]: 'edited' }, edits: c.edits + (wasAi ? 1 : 0) };
     });
 
-  const setFlag = (id, key, patch) => update(id, (c) => ({ ...c, flags: { ...c.flags, [key]: { ...(c.flags[key] || {}), ...patch } } }));
-
   const touches = data.touches;
-  const counts = useMemo(() => {
-    let confirmed = 0, sales = 0, refunds = 0, needs = 0, upsells = 0, compliance = 0;
-    for (const t of touches) {
-      const c = cards[t.id];
-      if (!c) continue;
-      const sec = SECTIONS.find((s) => s.id === t.section);
-      if (c.confirmed) confirmed++;
-      if (c.values.sale === 'Yes') sales++;
-      if (c.flags.refund?.on) refunds++;
-      if (c.flags.upsell?.on) upsells++;
-      if (missingRequired(sec, c.values).length) needs++;
-      compliance += complianceAlerts(sec, c.values).length;
-    }
-    const calls = touches.filter((t) => t.section !== 'comms').length;
-    return { confirmed, sales, refunds, needs, upsells, compliance, calls, comms: touches.length - calls };
-  }, [touches, cards]);
+  const confirmedCount = touches.filter((t) => cards[t.id]?.confirmed).length;
 
   const allWrites = useMemo(
     () =>
@@ -81,23 +77,20 @@ export default function Page() {
       <div className="top">
         <div className="top-inner">
           <div className="brand">
-            Onya <span>· CSM End of Day</span>
+            Onya <span>· End of Day</span>
           </div>
           <div className="tabs">
-            <button className={tab === 'form' ? 'on' : ''} onClick={() => setTab('form')}>EOD form</button>
+            <button className={tab === 'form' ? 'on' : ''} onClick={() => setTab('form')}>EOD</button>
             <button className={tab === 'map' ? 'on' : ''} onClick={() => setTab('map')}>Data we need</button>
           </div>
           <div className="spacer" />
           <div className="csm-pick">
-            <span className="meta">I am</span>
-            <select value={csm} onChange={(e) => setCsm(e.target.value)}>
+            <select value={csm} onChange={(e) => setCsm(e.target.value)} aria-label="CSM">
               {CSMS.map((c) => (
                 <option key={c}>{c}</option>
               ))}
             </select>
-          </div>
-          <div className="meta">
-            Mon, Nov 23 · synced from GHL + Fathom {data.lastSync}
+            <span className="meta">Mon, Nov 23</span>
           </div>
         </div>
       </div>
@@ -106,38 +99,20 @@ export default function Page() {
         <DataMap />
       ) : (
         <div className="wrap">
-          <div className="banner">Demo. Members are fictional and nothing is written to Airtable. Demo data is loaded for Tristan and Jack.</div>
-
-          <div className="stats">
-            <Stat n={touches.length} l="Members touched" />
-            <Stat n={counts.calls} l="Calls" />
-            <Stat n={counts.comms} l="Texts / phone" />
-            <Stat n={counts.sales} l="Sales reported" hl />
-            <Stat n={counts.upsells} l="Upsells" hl />
-            <Stat n={counts.refunds} l="Refund flags" bad={counts.refunds > 0} />
-            <Stat n={counts.compliance} l="Missed pitches" bad={counts.compliance > 0} />
-            <Stat n={counts.needs} l="Cards need input" bad={counts.needs > 0} />
-          </div>
-
-          <div className="legend">
-            Prefill source:
-            <span className="tag ai">AI</span> from transcript/SMS
-            <span className="tag airtable">Airtable</span> current record
-            <span className="tag calendar">Calendar</span> GHL event
-            <span className="tag edited">Edited</span> by you
-            <span className="tag empty">Needs input</span>
-          </div>
+          <p className="note">
+            Demo with fictional members. Everything below is prefilled from today’s calls and texts. Check each card and fix anything that’s wrong.
+            <span className="dot-ai" style={{ marginLeft: 6 }} /> = filled in for you.
+          </p>
 
           {SECTIONS.map((sec) => {
             const list = touches.filter((t) => t.section === sec.id);
+            if (!list.length) return null;
             return (
               <div className="section" key={sec.id}>
                 <div className="section-h">
                   <h2>{sec.title}</h2>
                   <span className="count">{list.length}</span>
-                  <span className="src">{sec.source}</span>
                 </div>
-                {list.length === 0 && <div className="empty">None today.</div>}
                 {list.map((t) => (
                   <Card
                     key={t.id}
@@ -145,46 +120,17 @@ export default function Page() {
                     sec={sec}
                     c={cards[t.id]}
                     setValue={(k, v) => setValue(t.id, k, v)}
-                    setFlag={(k, p) => setFlag(t.id, k, p)}
-                    setConfirmed={(v) => update(t.id, (c) => ({ ...c, confirmed: v, open: !v }))}
-                    setOpen={(v) => update(t.id, (c) => ({ ...c, open: v }))}
+                    patch={(p) => update(t.id, (c) => ({ ...c, ...p }))}
+                    setFlag={(k, p) => update(t.id, (c) => ({ ...c, flags: { ...c.flags, [k]: { ...(c.flags[k] || {}), ...p } } }))}
+                    onSeen={() => update(t.id, (c) => (c.seenAt ? c : { ...c, seenAt: Date.now() }))}
                   />
                 ))}
               </div>
             );
           })}
+          {touches.length === 0 && <div className="empty">No calls or texts synced for {csm} today. (Demo data is only loaded for Tristan and Jack.)</div>}
 
           <Untouched list={data.untouched} />
-
-          <div className="section">
-            <div className="section-h">
-              <h2>Your day</h2>
-              <span className="src">Optional · goes to the EOD log, not Members</span>
-            </div>
-            <div className="day grid">
-              <div className="f wide">
-                <label>Anything not captured above?</label>
-                <textarea value={day.wins} onChange={(e) => setDay({ ...day, wins: e.target.value })} placeholder="Internal work, escalations in progress, etc." />
-              </div>
-              <div className="f wide">
-                <label>Blockers / need help from leadership</label>
-                <textarea value={day.blockers} onChange={(e) => setDay({ ...day, blockers: e.target.value })} />
-              </div>
-              <div className="f wide">
-                <label>1% improvement</label>
-                <input value={day.improvement} onChange={(e) => setDay({ ...day, improvement: e.target.value })} />
-              </div>
-              <div className="f wide">
-                <label>Tomorrow (auto from next steps due)</label>
-                <div className="hint">
-                  {touches
-                    .filter((t) => cards[t.id]?.values.nextDue === '2026-11-24')
-                    .map((t) => `${t.name}: ${cards[t.id].values.nextStep}`)
-                    .join(' · ') || 'Nothing due tomorrow.'}
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -193,17 +139,15 @@ export default function Page() {
           <div className="bar-inner">
             <div className="progress">
               <small>
-                {counts.confirmed} of {touches.length} confirmed
-                {counts.needs ? ` · ${counts.needs} need input` : ''}
+                {confirmedCount} of {touches.length} checked
               </small>
               <div className="track">
-                <div className="fill" style={{ width: touches.length ? `${(counts.confirmed / touches.length) * 100}%` : '0%' }} />
+                <div className="fill" style={{ width: touches.length ? `${(confirmedCount / touches.length) * 100}%` : '0%' }} />
               </div>
             </div>
-            {submitted && <span className="meta">✓ Submitted (demo)</span>}
-            <button className="btn" onClick={() => setReview(true)}>Preview Airtable writes</button>
-            <button className="btn primary" disabled={counts.confirmed < touches.length || touches.length === 0} onClick={() => setReview(true)}>
-              Review &amp; submit
+            {submittedAt && <span className="meta">✓ Submitted</span>}
+            <button className="btn primary" disabled={touches.length === 0} onClick={() => setReview(true)}>
+              {confirmedCount < touches.length ? 'Preview' : 'Review & submit'}
             </button>
           </div>
         </div>
@@ -212,10 +156,12 @@ export default function Page() {
       {review && (
         <Review
           allWrites={allWrites}
-          canSubmit={counts.confirmed === touches.length && touches.length > 0}
+          cards={cards}
+          openedAt={state.openedAt}
+          canSubmit={confirmedCount === touches.length && touches.length > 0}
           onClose={() => setReview(false)}
           onSubmit={() => {
-            setSubmitted(true);
+            setSubmittedAt(Date.now());
             setReview(false);
           }}
           csm={csm}
@@ -225,157 +171,157 @@ export default function Page() {
   );
 }
 
-function Stat({ n, l, hl, bad }) {
-  return (
-    <div className={`stat ${hl && n ? 'hl' : ''} ${bad ? 'bad' : ''}`}>
-      <b>{n}</b>
-      <span>{l}</span>
-    </div>
-  );
-}
+/* ---------- Card ---------- */
 
-function HealthBadge({ v }) {
-  const h = healthOf(v);
-  if (!h) return null;
-  return (
-    <span className="pill" style={{ borderColor: h.color, color: h.color }}>
-      <span className="hdot" style={{ background: h.color, marginRight: 5 }} />
-      {h.label}
-    </span>
-  );
-}
+function Card({ t, sec, c, setValue, patch, setFlag, onSeen }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!ref.current || c?.seenAt) return;
+    const io = new IntersectionObserver(([e]) => e.isIntersecting && onSeen(), { threshold: 0.5 });
+    io.observe(ref.current);
+    return () => io.disconnect();
+  }, [c?.seenAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
-function Card({ t, sec, c, setValue, setFlag, setConfirmed, setOpen }) {
   if (!c) return null;
-  const missing = missingRequired(sec, c.values);
-  const compliance = complianceAlerts(sec, c.values);
+  const v = c.values;
+  const ai = (k) => c.prov[k] === 'ai' && v[k] !== '' && v[k] != null;
+  const questions = buildQuestions(sec, t, v);
+  const missing = missingRequired(sec, t, v);
+  const compliance = complianceAlerts(sec, t, v);
+  const activeFlags = FLAGS.filter((f) => c.flags[f.key]?.on);
 
   if (!c.open) {
+    const h = healthOf(v.health);
     return (
-      <div className={`card ${c.confirmed ? 'done' : ''}`}>
-        <div className="collapsed" onClick={() => setOpen(true)}>
-          {c.confirmed && <span className="ok">✓</span>}
-          <span className="name" style={{ fontWeight: 650 }}>{t.name}</span>
-          <span className="pill">{c.values.outcome || '—'}</span>
-          <HealthBadge v={c.values.health} />
-          {c.values.sale === 'Yes' && <span className="pill" style={{ color: 'var(--ok)' }}>Sale ${Number(c.values.jobValue || 0).toLocaleString()}</span>}
-          {c.flags.refund?.on && <span className="pill" style={{ color: 'var(--bad)' }}>Refund flag</span>}
-          <span className="sum">
-            Next: {c.values.nextStep || '—'} {c.values.nextDue ? `· ${fmtDate(c.values.nextDue)}` : ''}
-          </span>
+      <div className="card done" ref={ref}>
+        <div className="collapsed" onClick={() => patch({ open: true })}>
+          <span className="ok">✓</span>
+          <b>{t.name}</b>
+          <span className="sum">{v.outcome || '—'}</span>
+          {v.sale === 'Yes' && <span className="pill good">Sale</span>}
+          {activeFlags.map((f) => (
+            <span key={f.key} className={`pill ${f.bad ? 'bad' : 'good'}`}>{f.label}</span>
+          ))}
+          <span className="sum muted">→ {v.nextStep || '—'} {v.nextDue ? fmtDate(v.nextDue) : ''}</span>
           <span className="spacer" />
-          <button className="link">Edit</button>
+          {h && <span className="hdot" style={{ background: h.color }} title={h.label} />}
         </div>
       </div>
     );
   }
 
   return (
-    <div className={`card ${c.confirmed ? 'done' : ''}`}>
+    <div className="card" ref={ref}>
+      {/* Header: identity left, health right — same place on every card */}
       <div className="card-h">
-        <span className="name">{t.name}</span>
-        <span className="biz">{t.business}</span>
-        <span className="pill">{t.pkg}</span>
-        <span className="pill">{t.current.stage}</span>
-        <span className="spacer" style={{ flex: 1 }} />
-        {t.sources.map((s, i) => (
-          <span key={i} className="src-chip" title="Opens the recording / thread in the real build">
-            {SRC_ICON[s.kind]} <b>{s.label}</b> · {s.detail}
-          </span>
-        ))}
+        <div className="who">
+          <div className="name">
+            {t.name} <span className="biz">{t.business}</span>
+          </div>
+          <div className="summary-line">
+            {t.sources.map((s, i) => (
+              <span key={i} title={`${s.label} · ${s.detail}`}>{SRC_ICON[s.kind]} </span>
+            ))}
+            {t.summary}{' '}
+            <button className="link" onClick={() => patch({ showDetails: !c.showDetails })}>
+              {c.showDetails ? 'hide' : 'details'}
+            </button>
+          </div>
+        </div>
+        <HealthPicker value={v.health} ai={ai('health')} was={t.current.health} onChange={(n) => setValue('health', n)} />
       </div>
+
+      {c.showDetails && <Details t={t} sec={sec} c={c} />}
+
       <div className="card-b">
-        <div className="summary">
-          <p>{t.summary}</p>
-          {t.evidence?.length > 0 && (
-            <details className="evd">
-              <summary>Evidence ({t.evidence.length})</summary>
-              {t.evidence.map((e, i) => (
-                <div className="ev" key={i}>
-                  <i>{e.t}</i>
-                  <b>{e.who}:</b> “{e.text}”
-                </div>
-              ))}
-            </details>
-          )}
-        </div>
-
-        {t.alerts.map((a, i) => (
-          <div key={i} className="alert warn">⚠ {a}</div>
-        ))}
         {compliance.map((a, i) => (
-          <div key={'c' + i} className="alert bad">✕ {a}</div>
+          <div key={i} className="alert bad">{a}</div>
         ))}
 
-        <div className="grid">
-          {sec.fields.filter((f) => isVisible(f, c.values)).map((f) => (
-            <Field key={f.key} f={f} v={c.values[f.key] ?? ''} prov={c.prov[f.key]} onChange={(v) => setValue(f.key, v)} current={t.current} />
-          ))}
+        <div className="core">
+          <Labeled label="Outcome" ai={ai('outcome')} missing={!v.outcome}>
+            {sec.outcomes ? (
+              <select value={v.outcome || ''} onChange={(e) => setValue('outcome', e.target.value)}>
+                <option value="">Select…</option>
+                {sec.outcomes.map((o) => (
+                  <option key={o}>{o}</option>
+                ))}
+              </select>
+            ) : (
+              <input value={v.outcome || ''} onChange={(e) => setValue('outcome', e.target.value)} placeholder="What happened?" />
+            )}
+          </Labeled>
+          <Labeled label="Next step" ai={ai('nextStep')}>
+            <input value={v.nextStep || ''} onChange={(e) => setValue('nextStep', e.target.value)} />
+          </Labeled>
+          <Labeled label="Due" ai={ai('nextDue')}>
+            <input type="date" value={v.nextDue || ''} onChange={(e) => setValue('nextDue', e.target.value)} />
+          </Labeled>
         </div>
 
-        <div className="flags">
-          {FLAGS.map((fl) => {
-            const on = c.flags[fl.key]?.on;
-            const good = fl.key === 'upsell' || fl.key === 'caseStudy';
-            return (
-              <button key={fl.key} className={`flag ${on ? 'on' : ''} ${good ? 'good' : ''}`} onClick={() => setFlag(fl.key, { on: !on, prov: 'edited' })} title={`Writes to: ${fl.at}`}>
-                {on ? '✓ ' : '+ '}
-                {fl.label}
-                {on && c.flags[fl.key]?.prov === 'ai' && <span className="tag ai" style={{ marginLeft: 6 }}>AI</span>}
+        {questions.length > 0 && (
+          <div className="qs">
+            {questions.map((q) => (
+              <Question key={q.key} q={q} v={v} ai={ai} setValue={setValue} />
+            ))}
+          </div>
+        )}
+        {!callHeld(sec, v) && v.outcome && <div className="muted small">Call didn’t happen, so no call questions.</div>}
+
+        {c.showIssues && (
+          <Labeled label="Issues / concerns" ai={ai('issues')}>
+            <textarea value={v.issues || ''} onChange={(e) => setValue('issues', e.target.value)} />
+          </Labeled>
+        )}
+
+        {activeFlags.length > 0 && (
+          <div className="flag-rows">
+            {activeFlags.map((f) => (
+              <div className={`flag-row ${f.bad ? 'bad' : 'good'}`} key={f.key}>
+                <span className="flag-name">
+                  {c.flags[f.key]?.prov === 'ai' && <span className="dot-ai" />} {f.label}
+                </span>
+                {f.key === 'upsell' ? (
+                  <>
+                    <select value={c.flags.upsell.type || ''} onChange={(e) => setFlag('upsell', { type: e.target.value })}>
+                      <option value="">Type…</option>
+                      {UPSELL_TYPES.map((o) => (
+                        <option key={o}>{o}</option>
+                      ))}
+                    </select>
+                    <input className="money" placeholder="$ collected" value={c.flags.upsell.amount || ''} onChange={(e) => setFlag('upsell', { amount: e.target.value.replace(/[^\d.]/g, '') })} />
+                  </>
+                ) : (
+                  <input placeholder={f.placeholder} value={c.flags[f.key]?.note || ''} onChange={(e) => setFlag(f.key, { note: e.target.value })} />
+                )}
+                <button className="x" onClick={() => setFlag(f.key, { on: false })} aria-label="Remove">×</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {c.showFlags && (
+          <div className="flag-menu">
+            {FLAGS.filter((f) => !c.flags[f.key]?.on).map((f) => (
+              <button key={f.key} className="chip" onClick={() => { setFlag(f.key, { on: true }); patch({ showFlags: false }); }}>
+                {f.label}
               </button>
-            );
-          })}
-        </div>
-        {(c.flags.refund?.on || c.flags.upsell?.on || c.flags.escalate?.on || c.flags.caseStudy?.on) && (
-          <div className="flag-detail">
-            {c.flags.refund?.on && (
-              <div className="f wide">
-                <label>Refund / cancel — what did they say?</label>
-                <input value={c.flags.refund.note || ''} onChange={(e) => setFlag('refund', { note: e.target.value })} />
-              </div>
-            )}
-            {c.flags.upsell?.on && (
-              <>
-                <div className="f">
-                  <label>Upsell type</label>
-                  <select value={c.flags.upsell.type || ''} onChange={(e) => setFlag('upsell', { type: e.target.value })}>
-                    <option value="">Select…</option>
-                    {['Skid', 'Gutter Guards', 'Financing', 'SEO', 'AEO', 'SEO + AEO', 'Package upgrade', 'Lead purchase', 'Other'].map((o) => (
-                      <option key={o}>{o}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="f">
-                  <label>Cash collected $</label>
-                  <input inputMode="numeric" value={c.flags.upsell.amount || ''} onChange={(e) => setFlag('upsell', { amount: e.target.value.replace(/[^\d.]/g, '') })} />
-                </div>
-              </>
-            )}
-            {c.flags.escalate?.on && (
-              <div className="f wide">
-                <label>Escalation — what do you need?</label>
-                <input value={c.flags.escalate.note || ''} onChange={(e) => setFlag('escalate', { note: e.target.value })} />
-              </div>
-            )}
-            {c.flags.caseStudy?.on && (
-              <div className="f wide">
-                <label>Case study — type / status</label>
-                <input value={c.flags.caseStudy.note || ''} onChange={(e) => setFlag('caseStudy', { note: e.target.value })} />
-              </div>
-            )}
+            ))}
           </div>
         )}
       </div>
+
       <div className="card-f">
-        <span className="meta">{missing.length ? `Needs: ${missing.join(', ')}` : 'All required fields filled'}</span>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {c.confirmed && (
-            <button className="btn ghost" onClick={() => setOpen(false)}>
-              Collapse
-            </button>
+        <div className="adders">
+          {!c.showIssues && (
+            <button className="link" onClick={() => patch({ showIssues: true })}>+ Issue</button>
           )}
-          <button className="btn primary" disabled={missing.length > 0} onClick={() => setConfirmed(!c.confirmed)}>
-            {c.confirmed ? 'Unconfirm' : 'Looks right ✓'}
+          <button className="link" onClick={() => patch({ showFlags: !c.showFlags })}>+ Flag</button>
+        </div>
+        <div className="right">
+          {missing.length > 0 && <span className="need">Needs: {missing.join(', ')}</span>}
+          <button className="btn primary" disabled={missing.length > 0} onClick={() => patch({ confirmed: true, open: false, confirmedAt: Date.now() })}>
+            Looks right ✓
           </button>
         </div>
       </div>
@@ -383,141 +329,201 @@ function Card({ t, sec, c, setValue, setFlag, setConfirmed, setOpen }) {
   );
 }
 
-function Field({ f, v, prov, onChange, current }) {
-  const empty = v === '' || v == null;
-  const p = empty ? (f.required ? 'empty' : null) : prov;
-  const cls = `f ${f.wide ? 'wide' : ''} ${empty && f.required ? 'missing' : ''}`;
-  const tip = f.at ? `Writes to ${f.at}${f.status === 'new' ? ' (NEW field)' : f.status === 'options' ? ' (options change)' : ''}${f.note ? ' — ' + f.note : ''}` : 'EOD log only';
+function Labeled({ label, ai, missing, children }) {
+  return (
+    <div className={`f ${missing ? 'missing' : ''}`}>
+      <label>
+        {ai && <span className="dot-ai" title="Filled in from the call/text. Check it." />}
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
 
-  let input;
-  if (f.type === 'select') {
-    input = (
-      <select value={v} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Select…</option>
-        {f.options.map((o) => (
-          <option key={o}>{o}</option>
-        ))}
-      </select>
-    );
-  } else if (f.type === 'yesno') {
-    input = (
-      <div className="yn">
-        {f.options.map((o) => (
-          <button key={o} className={v === o ? 'on' : ''} onClick={() => onChange(v === o ? '' : o)}>
-            {o}
-          </button>
-        ))}
+function Seg({ options, value, onChange }) {
+  return (
+    <div className="seg">
+      {options.map((o) => (
+        <button key={o} className={value === o ? 'on' : ''} onClick={() => onChange(value === o ? '' : o)}>
+          {o}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Question({ q, v, ai, setValue }) {
+  const val = v[q.key] ?? '';
+  return (
+    <div className={`q ${q.kind === 'gap' ? 'gap' : ''} ${q.required && !val ? 'missing' : ''}`}>
+      <div className="q-label">
+        {ai(q.key) && <span className="dot-ai" title="Filled in from the call/text. Check it." />}
+        {q.q}
+        {q.kind === 'gap' && <span className="gap-tag" title={q.note}>not in Airtable</span>}
       </div>
-    );
-  } else if (f.type === 'health') {
-    input = (
-      <div className="health">
+      <div className="q-ctl">
+        {q.kind === 'pitch' && (
+          <>
+            <Seg options={['Yes', 'No']} value={val} onChange={(x) => setValue(q.key, x)} />
+            {val === 'Yes' && (
+              <select value={v[q.resultKey] || ''} onChange={(e) => setValue(q.resultKey, e.target.value)}>
+                <option value="">Result…</option>
+                {PITCH_RESULTS.map((o) => (
+                  <option key={o}>{o}</option>
+                ))}
+              </select>
+            )}
+          </>
+        )}
+        {q.kind === 'gap' && (
+          <>
+            <Seg options={['Yes', 'No', 'Not sure']} value={val} onChange={(x) => setValue(q.key, x)} />
+            {val === 'Yes' && <input type="date" value={v[q.dateKey] || ''} onChange={(e) => setValue(q.dateKey, e.target.value)} />}
+          </>
+        )}
+        {q.kind === 'sale' && (
+          <>
+            <Seg options={['Yes', 'No']} value={val} onChange={(x) => setValue('sale', x)} />
+            {val === 'Yes' && (
+              <>
+                <input type="date" value={v.saleDate || ''} onChange={(e) => setValue('saleDate', e.target.value)} title="Sale date" />
+                <input className="money" placeholder="$ job" value={v.jobValue || ''} onChange={(e) => setValue('jobValue', e.target.value.replace(/[^\d.]/g, ''))} />
+                <input className="money" placeholder="$ collected" value={v.cashCollected || ''} onChange={(e) => setValue('cashCollected', e.target.value.replace(/[^\d.]/g, ''))} />
+              </>
+            )}
+          </>
+        )}
+        {q.kind === 'date' && <input type="date" value={val} onChange={(e) => setValue(q.key, e.target.value)} />}
+        {q.kind === 'select' && <Seg options={q.options} value={val} onChange={(x) => setValue(q.key, x)} />}
+      </div>
+    </div>
+  );
+}
+
+function HealthPicker({ value, ai, was, onChange }) {
+  const cur = healthOf(value);
+  return (
+    <div className="hp">
+      <div className="hp-label">
+        {ai && <span className="dot-ai" />}
+        <span style={{ color: cur?.color }}>{cur ? cur.label : 'Health?'}</span>
+        {was && Number(was) !== Number(value) && <span className="muted"> (was {healthOf(was)?.label})</span>}
+      </div>
+      <div className="hp-row">
         {HEALTH.map((h) => (
           <button
             key={h.v}
+            title={`${h.v} · ${h.label}`}
             onClick={() => onChange(h.v)}
-            title={h.label}
-            style={Number(v) === h.v ? { background: h.color, borderColor: h.color, color: '#fff', fontWeight: 700 } : {}}
+            className={Number(value) === h.v ? 'on' : ''}
+            style={{ '--c': h.color }}
           >
             {h.v}
-            <br />
-            <span style={{ fontSize: 10 }}>{h.label}</span>
           </button>
         ))}
       </div>
-    );
-  } else if (f.type === 'textarea') {
-    input = <textarea value={v} onChange={(e) => onChange(e.target.value)} />;
-  } else if (f.type === 'date') {
-    input = <input type="date" value={v} onChange={(e) => onChange(e.target.value)} />;
-  } else if (f.type === 'money') {
-    input = <input inputMode="numeric" placeholder="$" value={v} onChange={(e) => onChange(e.target.value.replace(/[^\d.]/g, ''))} />;
-  } else {
-    input = <input value={v} onChange={(e) => onChange(e.target.value)} />;
-  }
-
-  let hint = null;
-  if (f.type === 'health' && current?.health && Number(current.health) !== Number(v)) hint = `Was: ${healthOf(current.health)?.label}`;
-  if (f.key === 'nextStep' && current?.nextStep && current.nextStep !== v) hint = `Was: ${current.nextStep}`;
-
-  return (
-    <div className={cls} title={tip}>
-      <label>
-        {f.label}
-        {f.required && <span className="req">*</span>}
-        {p && <span className={`tag ${p}`}>{PROV_LABEL[p]}</span>}
-        {f.status === 'new' && <span className="st new" title="Field does not exist in Airtable yet">new</span>}
-      </label>
-      {input}
-      {hint && <span className="hint">{hint}</span>}
     </div>
   );
 }
+
+function Details({ t, sec, c }) {
+  const writes = computeWrites(sec, t, c.values, c.flags);
+  return (
+    <div className="details">
+      <div className="d-col">
+        <div className="d-h">Sources</div>
+        {t.sources.map((s, i) => (
+          <div key={i} className="small">
+            {SRC_ICON[s.kind]} {s.label} · {s.detail}
+          </div>
+        ))}
+        {t.evidence.length > 0 && <div className="d-h" style={{ marginTop: 8 }}>What was said</div>}
+        {t.evidence.map((e, i) => (
+          <div className="ev" key={i}>
+            <i>{e.t}</i> <b>{e.who}:</b> “{e.text}”
+          </div>
+        ))}
+      </div>
+      <div className="d-col">
+        <div className="d-h">Will update in Airtable</div>
+        {writes.filter((w) => w.kind !== 'skip').map((w, i) => (
+          <div key={i} className="small">
+            <span className="muted">{w.table === 'Members' ? '' : w.table + ' · '}{w.field}:</span> {String(w.to)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Untouched ---------- */
 
 function Untouched({ list }) {
   const [open, setOpen] = useState(false);
+  if (!list?.length) return null;
   return (
     <div className="section">
-      <div className="section-h">
-        <h2>Needs attention: no contact today</h2>
-        <span className="count">{list.length}</span>
-        <button className="link" style={{ marginLeft: 'auto' }} onClick={() => setOpen(!open)}>
-          {open ? 'Hide' : 'Show'}
-        </button>
-      </div>
+      <button className="untouched-toggle" onClick={() => setOpen(!open)}>
+        {open ? '▾' : '▸'} {list.length} assigned member{list.length > 1 ? 's' : ''} need attention (no contact today)
+      </button>
       {open && (
         <div className="card untouched">
-          {list.length === 0 && <div className="row meta">Nobody flagged.</div>}
-          {list.map((u) => (
-            <div className="row" key={u.id}>
-              <b>{u.name}</b>
-              <span className="meta">{u.business}</span>
-              <HealthBadge v={u.health} />
-              <span className="reasons">{u.reasons.join(' · ')}</span>
-              <button className="link">Log a touch</button>
-            </div>
-          ))}
+          {list.map((u) => {
+            const h = healthOf(u.health);
+            return (
+              <div className="row" key={u.id}>
+                <span className="hdot" style={{ background: h?.color }} title={h?.label} />
+                <b>{u.name}</b>
+                <span className="reasons">{u.reasons.join(' · ')}</span>
+              </div>
+            );
+          })}
         </div>
       )}
-      {!open && <div className="empty">Assigned members with an overdue next step, health 3 or worse, or 5+ days without contact. Not required.</div>}
     </div>
   );
 }
 
-function Review({ allWrites, canSubmit, onClose, onSubmit, csm }) {
+/* ---------- Review ---------- */
+
+function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm }) {
   const total = allWrites.reduce((n, x) => n + x.writes.filter((w) => w.kind !== 'skip').length, 0);
-  const viktor = allWrites.reduce((n, x) => n + x.writes.filter((w) => w.viktor).length, 0);
+  const now = Date.now();
+  const timing = allWrites.map(({ t }) => {
+    const c = cards[t.id];
+    const ms = c.confirmedAt && c.seenAt ? c.confirmedAt - c.seenAt : null;
+    return { name: t.name, ms, edits: c.edits, confirmed: c.confirmed, quick: c.confirmed && ms != null && ms < QUICK_MS && c.edits === 0 };
+  });
+  const quick = timing.filter((x) => x.quick).length;
+  const edits = timing.reduce((n, x) => n + x.edits, 0);
+
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Airtable writes on submit</h3>
+        <h3>{canSubmit ? 'Submit your EOD' : 'Preview'}</h3>
         <div className="meta">
-          {total} writes · {viktor} touch fields Viktor also writes · plus 1 EOD log row for {csm} on {fmtDate(TODAY)}
+          {total} Airtable updates across {allWrites.length} members, plus 1 EOD log row for {csm} ({fmtDate(TODAY)}).
+          {!canSubmit && ' Check every card to submit.'}
         </div>
+
         {allWrites.map(({ t, writes }) => (
           <div className="grp writes" key={t.id}>
             <h4>{t.name}</h4>
             <table>
-              <thead>
-                <tr>
-                  <th style={{ width: '24%' }}>Table</th>
-                  <th style={{ width: '24%' }}>Field</th>
-                  <th>Value</th>
-                  <th style={{ width: 130 }}></th>
-                </tr>
-              </thead>
               <tbody>
                 {writes.map((w, i) => (
-                  <tr key={i}>
-                    <td>{w.table}</td>
-                    <td>{w.field}</td>
+                  <tr key={i} className={w.kind === 'skip' ? 'skipped' : ''}>
+                    <td style={{ width: '34%' }}>
+                      {w.table !== 'Members' && <span className="muted">{w.table} · </span>}
+                      {w.field}
+                    </td>
                     <td>
                       {w.from && w.from !== w.to && <span className="from">{String(w.from)}</span>}
                       {String(w.to)}
-                      {w.note && <div className="meta">{w.note}</div>}
+                      {w.note && <span className="muted"> — {w.note}</span>}
                     </td>
-                    <td>
-                      {w.kind === 'skip' && <span className="st skip">skip</span>}
+                    <td style={{ width: 150, textAlign: 'right' }}>
                       {w.kind === 'create' && <span className="st create">new row</span>}{' '}
                       {w.status === 'new' && <span className="st new">new field</span>}{' '}
                       {w.status === 'options' && <span className="st options">new options</span>}{' '}
@@ -529,42 +535,87 @@ function Review({ allWrites, canSubmit, onClose, onSubmit, csm }) {
             </table>
           </div>
         ))}
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-          <button className="btn" onClick={onClose}>
-            Back
-          </button>
-          <button className="btn primary" disabled={!canSubmit} onClick={onSubmit} title={canSubmit ? '' : 'Confirm every card first'}>
-            Submit EOD (demo)
-          </button>
+
+        <div className="admin">
+          <div className="admin-h">Behind the scenes (admin only, the CSM never sees this)</div>
+          <div className="admin-stats">
+            <span>Time on form: <b>{secs(now - openedAt)}</b></span>
+            <span>AI values changed: <b>{edits}</b></span>
+            <span>Quick confirms (&lt;{QUICK_MS / 1000}s, no edits): <b className={quick ? 'bad-t' : ''}>{quick}</b></span>
+          </div>
+          <table>
+            <tbody>
+              {timing.map((x) => (
+                <tr key={x.name}>
+                  <td>{x.name}</td>
+                  <td>{x.confirmed ? secs(x.ms) : 'not checked'}</td>
+                  <td>{x.edits} edit{x.edits === 1 ? '' : 's'}</td>
+                  <td style={{ textAlign: 'right' }}>{x.quick && <span className="st viktor">quick confirm</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="modal-f">
+          <button className="btn" onClick={onClose}>Back</button>
+          <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>Submit EOD</button>
         </div>
       </div>
     </div>
   );
 }
 
+/* ---------- Data map ---------- */
+
 function DataMap() {
   const label = { exists: 'exists', new: 'new', options: 'options change' };
   const n = (s) => DATA_MAP.filter((r) => r[3] === s).length;
+  const order = Object.keys(STEPS);
   return (
     <div className="wrap map">
-      <div className="banner">
+      <p className="note">
         What the real build needs. {n('exists')} data points already have an Airtable home, {n('new')} need a new field or table, and {n('options')} needs its options changed.
-      </div>
+      </p>
 
       <h2>How the prefill works</h2>
       <div className="flow">
-        <div className="node">GHL webhooks<small>SMS, calls, calendar events</small></div>
+        <div className="node">GHL webhooks<small>SMS, calls, calendar</small></div>
         <span className="arr">+</span>
         <div className="node">Fathom webhook<small>recording + transcript</small></div>
         <span className="arr">→</span>
-        <div className="node">Touch store<small>Supabase/Railway · matched to Member + CSM</small></div>
+        <div className="node">Touch store<small>matched to Member + CSM</small></div>
         <span className="arr">→</span>
-        <div className="node">AI extraction<small>outcome, next step, sale, refund, pitches</small></div>
+        <div className="node">AI extraction<small>outcome, next step, sale, pitches, gaps</small></div>
         <span className="arr">→</span>
-        <div className="node">EOD form<small>CSM confirms each card</small></div>
+        <div className="node">EOD form<small>CSM checks each card</small></div>
         <span className="arr">→</span>
         <div className="node">Airtable<small>Members + related tables + EOD log</small></div>
       </div>
+
+      <h2>Which questions show up</h2>
+      <p className="small muted">
+        Every card asks outcome, next step, due and health. Pitch and sale questions are asked every time for their call type. A journey step that should be done by this call but has no date in Airtable becomes a question. If the date is already there, the question doesn’t show.
+      </p>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Call type</th>
+              <th>Always asked</th>
+              <th>Asked only if missing in Airtable</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><b>Onboarding</b></td><td>Pitched SEO/AEO? → result</td><td>—</td></tr>
+            <tr><td><b>Pre-launch</b></td><td>—</td><td>{EXPECTED.prelaunch.map((k) => STEPS[k].label).join(', ')}</td></tr>
+            <tr><td><b>Launch</b></td><td>Pitched Affirm? → result · Marketing go-live date</td><td>{EXPECTED.launch.map((k) => STEPS[k].label).join(', ')}</td></tr>
+            <tr><td><b>Check-in</b></td><td>First sale yet? / New sale? → date, $ job, $ collected · Reorder</td><td>{EXPECTED.checkin.map((k) => STEPS[k].label).join(', ')}, then first appointment booked / held once a first lead exists</td></tr>
+            <tr><td><b>Texts / phone</b></td><td>Sale?</td><td>Same as the member’s current stage</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="small muted">Journey order: {order.map((k) => STEPS[k].label).join(' → ')}</p>
 
       <h2>Data points</h2>
       <div className="tablewrap">
@@ -588,6 +639,13 @@ function DataMap() {
                 <td>{r[4]}</td>
               </tr>
             ))}
+            <tr>
+              <td><b>Form timing (admin only)</b></td>
+              <td>This form</td>
+              <td>EOD log: time on form, per-card seconds, AI values changed, quick confirms</td>
+              <td><span className="st new">new</span></td>
+              <td>Flags CSMs who confirm without checking. Use it to choose whose cards to spot-check against the transcript.</td>
+            </tr>
           </tbody>
         </table>
       </div>
