@@ -84,7 +84,7 @@ export const SECTIONS = [
     id: 'checkin',
     title: 'Check-in calls',
     source: 'Fathom + GHL "Check-in" calendar',
-    callDateField: 'Last check-in date',
+    callDateField: null, // covered by Last Contact (measured elsewhere)
     outcomes: ['Completed', 'No-show', 'Rescheduled'],
     always: [{ key: 'sale', q: 'sale', type: 'sale' }], // everything else is optional via "+ Add"
   },
@@ -110,44 +110,38 @@ export const PITCH_RESULTS = ['Sold', 'Interested – follow up', 'Not intereste
 
 
 // "What data we need" tab.
+// [Data point, Source, Where it goes, Status, Notes]  status: exists | options | comment | eod | supabase
 export const DATA_MAP = [
-  ['Which members a CSM touched today', 'GHL conversations + calendar events, Fathom recordings', '—', 'new', 'Touch store (Supabase/Railway): one row per call/SMS/recording, matched to a Member.'],
-  ['Call type', 'GHL calendar (one per type) or meeting title', '—', 'new', 'One calendar per type is safer than a naming rule.'],
-  ['Member ↔ GHL / Fathom match', 'HighLevel Contact ID, Email, Secondary Contact Email', 'Members', 'exists', 'Fathom invitee emails must match Members email fields. Unmatched go to a review bucket.'],
-  ['CSM ↔ GHL user ↔ Fathom recorder', 'Mapping', 'CSM directory (new)', 'new', 'CSM name, GHL user ID, Fathom email, Slack ID, timezone.'],
-  ['Journey step dates (9 steps)', 'Airtable today; gap questions fill blanks', 'Members: Onboarding completed at … Fulfillment completed at', 'exists', 'Drives which questions appear. Missing expected dates become questions.'],
-  ['Outcome / next step / due', 'AI from transcript or SMS', 'Members.Next step, Next step due', 'exists', ''],
-  ['Issues', 'AI from transcript or SMS', 'Members.Current issues', 'new', ''],
-  ['Health (1 Healthy → 5 Red Alert)', 'AI suggestion, CSM confirms', 'Members.Health Status', 'options', 'Replace options with the 5 levels.'],
+  ['Who a CSM talked to today', 'GHL webhooks (SMS, calls, calendar) + Fathom webhook', 'Touch store', 'supabase', 'One row per call/text/recording, matched to a Member. Too much volume for Airtable.'],
+  ['CSM ↔ GHL user ↔ Fathom email', 'Setup', 'CSM directory', 'supabase', 'CSM name, GHL user ID, Fathom email, Slack ID, time zone.'],
+  ['Call type', 'GHL calendar (one per type) or meeting title', '—', 'exists', 'One calendar per type is safer than a naming rule.'],
+  ['Member match', 'HighLevel Contact ID, Email, Secondary Contact Email', 'Members', 'exists', 'Unmatched touches go to a review bucket; CSM can also "+ Add a client".'],
+  ['Next step / due', 'AI from call or text', 'Members.Next step, Next step due', 'exists', ''],
+  ['Health (1 Healthy → 5 Red Alert)', 'AI suggestion, CSM confirms', 'Members.Health Status', 'options', 'Add options: Not Thrilled, Red Alert. Check Standup formulas first. Confirm Health Status vs Health Status 2.'],
+  ['Journey step dates (gap questions)', 'Airtable; CSM fills blanks', 'Members: Onboarding completed at … Fulfillment completed at', 'exists', 'Only written when empty.'],
   ['Call dates', 'Calendar event', 'Members: Onboarding / Pre-launch / Launch call date', 'exists', ''],
-  ['Last check-in date', 'Calendar event', 'Members.Last check-in date', 'new', ''],
-  ['Last contact', 'Latest touch of any kind', 'Members.Last Contact', 'exists', 'Check what currently writes it.'],
-  ['SEO/AEO pitched + result', 'Transcript', 'Members.AEO/SEO pitched at, AEO/SEO result', 'new', 'Asked on every onboarding call.'],
-  ['Affirm pitched + result', 'Transcript', 'Members.Affirm pitched at, Affirm result', 'new', 'Asked on every launch call.'],
-  ['First sale', 'Transcript / SMS / CSM', 'Members.First sale closed at', 'exists', 'Only written if empty.'],
-  ['Sale value + cash collected', 'Transcript / SMS / CSM', 'Members.Last sale date, Last sale job value, First cash collected at, First cash amount', 'new', 'Supports either KPI until decided.'],
-  ['Refund / cancel request', 'Transcript / SMS', 'Payments, Refunds & Disputes (row) + Lifecycle Stage', 'exists', ''],
-  ['Upsell sold', 'Transcript', 'Upsell Table (row)', 'exists', ''],
-  ['Reorder status', 'Transcript', 'Reorder Pipeline.Reorder Status', 'exists', ''],
-  ['Touch rule (3/week, max 3 calendar days apart)', 'Measured outside the EOD', 'Members.Last Contact, Touch days this week', 'exists', 'Read-only for the EOD. Drives "Needs attention".'],
-  ['Outreach with no reply (ghosting)', 'GHL outbound SMS/calls with no inbound reply', 'Members.Lifecycle Stage = Ghosting', 'exists', 'Attempts + last reply date come from GHL. CSM confirms before Lifecycle flips to Ghosting.'],
-  ['EOD submission log', 'This form', 'EOD log (one row per CSM per day)', 'new', 'Summary, members touched, counts, submitted at.'],
+  ['First sale', 'Call / text / CSM', 'Members.First sale closed at', 'exists', 'Only asked until one is on record.'],
+  ['Ghosting', 'GHL outbound with no reply', 'Members.Lifecycle Stage = Ghosting', 'exists', ''],
+  ['Issues, pitch results, sale amounts, case studies', 'Call / text / CSM', 'One comment on the Member record', 'comment', 'Format: [CSM EOD date] item · item. Parseable later if the KPI switches to first cash.'],
+  ['Refund / cancel, upsell, reorder, oil return, tickets', 'Call / text / CSM', 'Same path the portal forms / ticket system use', 'exists', 'Do NOT write the Airtable tables directly: Customer tickets is a mirror, and portal forms trigger Viktor checks.'],
+  ['Daily EOD record', 'This form', 'EOD Check-ins (existing table)', 'eod', 'Add: Members touched (link), Time on form, Quick confirms, AI values changed, Added by hand. Summary goes in the existing section fields.'],
+  ['Last Contact / touches this week', 'Measured elsewhere', 'Members.Last Contact, Touch days this week', 'exists', 'Read only. Drives "Needs attention".'],
 ];
 
 export const OPEN_QUESTIONS = [
-  'Prefill timing: process each call/text as it happens (recommended) vs. at form load vs. every 30 min.',
-  'Access: name-picker link is open to anyone with the URL. Shared passcode?',
-  'KPI: "first sale" vs "first cash collected". Form captures both, so this only decides the dashboard number.',
-  'Viktor: which Members fields does it overwrite? EOD writes to those need "only if empty" or a skip.',
-  'Last Contact: touches are measured elsewhere. Should the EOD stop writing Last Contact too?',
+  'Viktor: which Members fields does it write? EOD writes to those need "only if empty" or a skip. (Ask whoever set up Viktor.)',
+  'Tickets: where are Customer tickets actually created (Zendesk? portal?) so the EOD creates real ones, not Airtable mirror rows.',
+  'Portal forms: can the EOD submit through the portal’s Upsell / Reorder / Oil Return / Refund endpoints so Viktor’s checks still run? (Ali)',
   'Call types: one GHL calendar per type vs. naming convention in titles.',
-  'Upsells: does the EOD replace the portal Upsell form for CSM-sold upsells?',
 ];
 
 // Decided
 export const DECISIONS = [
-  'Touch rule uses calendar days.',
-  'EOD submissions do not count toward Touch days this week (measured elsewhere).',
+  'Prefill runs as each call / text happens (webhooks), so the form is ready when opened.',
+  'Access: name-picker link behind one shared passcode, checked server-side (env var, never in code).',
+  'KPI stays first close for now. Cash collected is captured in the comment in case that changes.',
+  'Touch rule uses calendar days. EOD does not write Last Contact or Touch days this week (measured elsewhere).',
   'Gap question answered "Not sure": ask again next time.',
   'First sale is only asked until one is on record; later sales are an optional add-on.',
+  'Minimal Airtable: 2 Health Status options + 5 fields on EOD Check-ins. Issues, pitch results and sale amounts go in a record comment.',
 ];

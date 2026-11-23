@@ -55,16 +55,21 @@ export function complianceAlerts(sec, touch, values) {
     .map((q) => q.mandatory);
 }
 
+const money = (v) => `$${Number(v || 0).toLocaleString()}`;
+
 // Airtable writes this card produces on submit.
-export function computeWrites(sec, touch, values, flags) {
+// Principle: only write fields that already exist. Narrative detail (issues, pitch results,
+// sale amounts) goes into ONE comment on the Member record, prefixed with the CSM's name.
+// Last Contact / touch counts are NOT written: touches are measured elsewhere.
+export function computeWrites(sec, touch, values, flags, csm = 'CSM') {
   const cur = touch.current || {};
   const journey = cur.journey || {};
   const w = [];
+  const comment = [];
   const up = (field, to, opts = {}) => w.push({ kind: 'update', table: 'Members', field, from: opts.from ?? '', to, ...opts });
   const held = callHeld(sec, values);
 
-  up('Last Contact', TODAY, { from: cur.lastContact, status: 'exists', viktor: true });
-  if (sec.callDateField && held) up(sec.callDateField, TODAY, { status: sec.callDateField === 'Last check-in date' ? 'new' : 'exists' });
+  if (sec.callDateField && held) up(sec.callDateField, TODAY, { status: 'exists' });
   if (values.nextStep) up('Next step', values.nextStep, { from: cur.nextStep, status: 'exists' });
   if (values.nextDue) up('Next step due', values.nextDue, { from: cur.nextDue, status: 'exists' });
   if (values.health) up('Health Status', hLabel(values.health), { from: hLabel(cur.health), status: 'options' });
@@ -72,33 +77,27 @@ export function computeWrites(sec, touch, values, flags) {
     up('Onboarding completed at', TODAY, { status: 'exists' });
     up('Client Stage', '3. Onboarded - not certified', { from: cur.stage, status: 'exists' });
   }
+  if (values.outcome) comment.push(`${sec.title.replace(/s$/, '')}: ${values.outcome}`);
 
   for (const q of buildQuestions(sec, touch, values)) {
     const v = values[q.key];
-    if (q.key === 'ghosting' && v === 'Yes' && touch.current.lifecycle !== 'Ghosting') up('Lifecycle Stage', 'Ghosting', { from: touch.current.lifecycle, status: 'exists' });
-    if (q.key === 'ghosting' && v === 'No' && touch.current.lifecycle === 'Ghosting') up('Lifecycle Stage', 'Active', { from: 'Ghosting', status: 'exists' });
-    if (q.kind === 'pitch' && v === 'Yes') {
-      const base = q.key === 'aeo' ? 'AEO/SEO' : 'Affirm';
-      up(`${base} pitched at`, TODAY, { status: 'new' });
-      if (values[q.resultKey]) up(`${base} result`, values[q.resultKey], { status: 'new' });
-    }
+    if (q.key === 'ghosting' && v === 'Yes' && cur.lifecycle !== 'Ghosting') up('Lifecycle Stage', 'Ghosting', { from: cur.lifecycle, status: 'exists' });
+    if (q.key === 'ghosting' && v === 'No' && cur.lifecycle === 'Ghosting') up('Lifecycle Stage', 'Active', { from: 'Ghosting', status: 'exists' });
+    if (q.kind === 'pitch' && v) comment.push(`${q.q.replace('?', '')}: ${v}${v === 'Yes' && values[q.resultKey] ? ` (${values[q.resultKey]})` : ''}`);
     if (q.kind === 'date' && v) up('Marketing activated at', v, { status: 'exists' });
-    if (q.kind === 'select' && v && v !== 'Not discussed') w.push({ kind: 'update', table: 'Reorder Pipeline', field: 'Reorder Status', to: v, status: 'exists' });
-    if (q.kind === 'gap' && v === 'Yes') up(STEPS[q.step].field, values[q.dateKey] || '', { status: 'exists', viktor: STEPS[q.step].viktor, note: 'Was empty — filled from EOD' });
-    if (q.kind === 'gap' && v !== 'Yes' && v) w.push({ kind: 'skip', table: 'Members', field: STEPS[q.step].field, to: v, note: 'Logged to EOD only' });
+    if (q.kind === 'gap' && v === 'Yes') up(STEPS[q.step].field, values[q.dateKey] || '', { status: 'exists', viktor: STEPS[q.step].viktor, note: 'Was empty, filled from EOD' });
+    if (q.kind === 'gap' && v && v !== 'Yes') w.push({ kind: 'skip', table: 'Members', field: STEPS[q.step].field, to: v, note: 'Not written; asked again next time' });
     if (q.kind === 'sale' && v === 'Yes') {
-      if (!journey.firstSale) {
-        up('First sale closed at', values.saleDate || TODAY, { status: 'exists' });
-        if (values.cashCollected) {
-          up('First cash collected at', values.saleDate || TODAY, { status: 'new' });
-          up('First cash amount', `$${Number(values.cashCollected).toLocaleString()}`, { status: 'new' });
-        }
-      }
-      if (values.saleDate) up('Last sale date', values.saleDate, { status: 'new' });
-      if (values.jobValue) up('Last sale job value', `$${Number(values.jobValue).toLocaleString()}`, { status: 'new' });
+      up('First sale closed at', values.saleDate || TODAY, { status: 'exists' });
+      comment.push(`First sale ${values.saleDate || TODAY} · job ${money(values.jobValue)} · collected ${money(values.cashCollected)}`);
     }
   }
 
-  w.push(...addonWrites(flags));
+  for (const x of addonWrites(flags)) {
+    if (x.kind === 'comment') comment.push(x.to);
+    else w.push(x);
+  }
+
+  if (comment.length) w.push({ kind: 'comment', table: 'Members', field: 'Comment', to: `[${csm} EOD ${TODAY}] ` + comment.join(' · '), status: 'exists' });
   return w;
 }

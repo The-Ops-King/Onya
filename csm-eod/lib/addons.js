@@ -11,12 +11,12 @@ export const ADDONS = [
   {
     key: 'issue', group: 'Client', label: 'Issue / concern', tone: 'warn',
     fields: [{ k: 'text', type: 'text', ph: 'What’s wrong?' }],
-    writes: (a) => [{ kind: 'update', table: 'Members', field: 'Current issues', to: a.text || '—', status: 'new' }],
+    writes: (a) => [{ kind: 'comment', to: `Issue: ${a.text || '—'}` }],
   },
   {
     key: 'caseStudy', group: 'Client', label: 'Case study / testimonial', tone: 'good',
     fields: [{ k: 'type', type: 'select', options: ['Screenshot', 'Selfie video', 'Interview booked'] }, { k: 'note', type: 'text', ph: 'Notes' }],
-    writes: (a) => [{ kind: 'skip', table: 'EOD log', field: 'Case study', to: `${a.type || '—'} ${a.note || ''}`, note: 'Counts toward 2/week KPI' }],
+    writes: (a) => [{ kind: 'comment', to: `Case study: ${a.type || '—'}${a.note ? ' · ' + a.note : ''}` }],
   },
   {
     key: 'marketing', group: 'Marketing & leads', label: 'Marketing change', tone: 'info',
@@ -44,10 +44,7 @@ export const ADDONS = [
   {
     key: 'sale', group: 'Money', label: 'Sale made', tone: 'good', onlyAfterFirstSale: true,
     fields: [{ k: 'date', type: 'date' }, { k: 'jobValue', type: 'money', ph: '$ job' }, { k: 'collected', type: 'money', ph: '$ collected' }],
-    writes: (a) => [
-      { kind: 'update', table: 'Members', field: 'Last sale date', to: a.date || '—', status: 'new' },
-      ...(a.jobValue ? [{ kind: 'update', table: 'Members', field: 'Last sale job value', to: money(a.jobValue), status: 'new' }] : []),
-    ],
+    writes: (a) => [{ kind: 'comment', to: `Sale ${a.date || '—'} · job ${money(a.jobValue)} · collected ${money(a.collected)}` }],
   },
   {
     key: 'upsell', group: 'Money', label: 'Upsell sold', tone: 'good',

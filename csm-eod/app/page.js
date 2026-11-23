@@ -111,9 +111,9 @@ export default function Page() {
       touches.map((t) => {
         const sec = SECTIONS.find((s) => s.id === t.section);
         const c = cards[t.id];
-        return { t, writes: c ? computeWrites(sec, t, c.values, c.flags) : [] };
+        return { t, writes: c ? computeWrites(sec, t, c.values, c.flags, csm) : [] };
       }),
-    [touches, cards]
+    [touches, cards, csm]
   );
 
   return (
@@ -694,6 +694,7 @@ function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm 
                     </td>
                     <td style={{ width: 150, textAlign: 'right' }}>
                       {w.kind === 'create' && <span className="st create">new row</span>}{' '}
+                      {w.kind === 'comment' && <span className="st comment">comment</span>}{' '}
                       {w.status === 'new' && <span className="st new">new field</span>}{' '}
                       {w.status === 'options' && <span className="st options">new options</span>}{' '}
                       {w.viktor && <span className="st viktor">viktor</span>}
@@ -739,13 +740,13 @@ function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm 
 /* ---------- Data map ---------- */
 
 function DataMap() {
-  const label = { exists: 'exists', new: 'new', options: 'options change' };
+  const label = { exists: 'existing field', options: 'add options', comment: 'comment', eod: 'EOD Check-ins', supabase: 'Supabase' };
   const n = (s) => DATA_MAP.filter((r) => r[3] === s).length;
   const order = Object.keys(STEPS);
   return (
     <div className="wrap map">
       <p className="note">
-        What the real build needs. {n('exists')} data points already have an Airtable home, {n('new')} need a new field or table, and {n('options')} needs its options changed.
+        What the real build needs. Airtable changes are kept to the minimum: two new Health Status options and five fields on the existing EOD Check-ins table. No new Members fields, no new tables. Everything else uses existing fields or a comment on the record.
       </p>
 
       <h2>How the prefill works</h2>
@@ -780,8 +781,8 @@ function DataMap() {
             <tr><td><b>Onboarding</b></td><td>Pitched SEO/AEO? → result</td><td>—</td></tr>
             <tr><td><b>Pre-launch</b></td><td>—</td><td>{EXPECTED.prelaunch.map((k) => STEPS[k].label).join(', ')}</td></tr>
             <tr><td><b>Launch</b></td><td>Pitched Affirm? → result · Marketing go-live date</td><td>{EXPECTED.launch.map((k) => STEPS[k].label).join(', ')}</td></tr>
-            <tr><td><b>Check-in</b></td><td>First sale yet? → date, $ job, $ collected (only until a first sale is on record; after that it’s an optional flag) · Reorder</td><td>{EXPECTED.checkin.map((k) => STEPS[k].label).join(', ')}, then first appointment booked / held once a first lead exists</td></tr>
-            <tr><td><b>Texts / phone</b></td><td>Sale?</td><td>Same as the member’s current stage</td></tr>
+            <tr><td><b>Check-in</b></td><td>First sale yet? → date, $ job, $ collected (only until a first sale is on record). Everything else is optional via “+ Add”.</td><td>{EXPECTED.checkin.map((k) => STEPS[k].label).join(', ')}, then first appointment booked / held once a first lead exists</td></tr>
+            <tr><td><b>Texts / phone</b></td><td>First sale yet? (only until one is on record)</td><td>Same as the member’s current stage</td></tr>
           </tbody>
         </table>
       </div>
@@ -794,7 +795,7 @@ function DataMap() {
             <tr>
               <th>Data point</th>
               <th>Source</th>
-              <th>Airtable target</th>
+              <th>Where it goes</th>
               <th>Status</th>
               <th>Notes</th>
             </tr>
@@ -809,13 +810,6 @@ function DataMap() {
                 <td>{r[4]}</td>
               </tr>
             ))}
-            <tr>
-              <td><b>Form timing (admin only)</b></td>
-              <td>This form</td>
-              <td>EOD log: time on form, per-card seconds, AI values changed, quick confirms</td>
-              <td><span className="st new">new</span></td>
-              <td>Flags CSMs who confirm without checking. Use it to choose whose cards to spot-check against the transcript.</td>
-            </tr>
           </tbody>
         </table>
       </div>

@@ -275,3 +275,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mini .money { width: 90px !important; }
 
 .add-row.bottom { margin: 18px 0 0; }
+
+.st.comment { background: var(--panel-2); color: var(--ink-2); border: 1px solid var(--line); }
+.st.eod { background: var(--edit-bg); color: var(--edit); }
+.st.supabase { background: var(--at-bg); color: var(--at); }
