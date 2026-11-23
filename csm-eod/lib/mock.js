@@ -82,7 +82,7 @@ export const MEMBERS = {
         evidence: [{ t: '21:33', who: 'Carla', text: 'Honestly, what would it look like if I wanted my money back?' }],
         values: { outcome: 'Completed', sale: 'No', reorder: 'Not discussed', nextStep: 'Submit lead replacements + call back', nextDue: '2026-11-24', issues: 'Lead quality complaint; raised refund.', health: 4 },
         prov: { outcome: 'ai', sale: 'ai', reorder: 'ai', nextStep: 'ai', nextDue: 'ai', issues: 'ai', health: 'ai' },
-        flags: { refund: { on: true, note: 'Asked what a refund would look like (not formal yet).', prov: 'ai' } },
+        flags: { refund: { on: true, note: 'Asked what a refund would look like (not formal yet).', prov: 'ai' }, leads: { on: true, type: 'Lead replacement', count: '5', note: '5 of 9 dropped', prov: 'ai' } },
       }),
       m({
         id: 't8', section: 'comms', phase: 'checkin', name: 'Wes Holloway', business: 'Holloway Roof Restore', pkg: 'Growth',
@@ -103,11 +103,6 @@ export const MEMBERS = {
         values: { outcome: 'Sent oil tracking; ETA 11/25', sale: 'No', nextStep: 'Confirm delivery', nextDue: '2026-11-25', health: 2, gap_oilDelivered: 'No' },
         prov: { outcome: 'ai', sale: 'ai', nextStep: 'ai', nextDue: 'ai', health: 'airtable', gap_oilDelivered: 'ai' },
       }),
-    ],
-    untouched: [
-      { id: 'u1', name: 'Brent Kowalski', business: 'Kowalski Exteriors', health: 3, reasons: ['Next step overdue 4 days', '9 days since contact'] },
-      { id: 'u2', name: 'Lisa Tran', business: 'Tran Roofing Co', health: 4, reasons: ['At Risk', '6 days since contact'] },
-      { id: 'u3', name: 'Omar Haddad', business: 'Haddad Home Pros', health: 2, reasons: ['Oil delivered 11/12, no launch call booked'] },
     ],
   },
   Jack: {
@@ -140,10 +135,27 @@ export const MEMBERS = {
         prov: { health: 'airtable' },
       }),
     ],
-    untouched: [{ id: 'u4', name: 'Sam Whitaker', business: 'Whitaker Exteriors', health: 3, reasons: ['12 days since contact'] }],
   },
 };
 
+// Assigned members not in today's cards (feeds "Needs attention" + "Add a client").
+// lastContact / touchesWeek mirror Members.Last Contact and Members.Touch days this week.
+const r = (id, name, business, pkg, csm, o) => ({
+  id, name, business, pkg, csm,
+  current: { health: o.health, journey: o.journey || {}, stage: '', nextStep: o.nextStep || '', nextDue: o.nextDue || '', lastContact: o.lastContact, touchesWeek: o.touchesWeek ?? 0 },
+});
+export const ROSTER = [
+  r('u1', 'Brent Kowalski', 'Kowalski Exteriors', 'Starter', 'Tristan', { health: 3, lastContact: '2026-11-14', nextStep: 'Send cert link', nextDue: '2026-11-19', journey: { onboarded: '2026-11-04' } }),
+  r('u2', 'Lisa Tran', 'Tran Roofing Co', 'Growth', 'Tristan', { health: 4, lastContact: '2026-11-17', journey: { onboarded: '2026-10-14', certified: '2026-10-18', oilDelivered: '2026-10-27', marketingLive: '2026-11-02' } }),
+  r('u3', 'Omar Haddad', 'Haddad Home Pros', 'Starter', 'Tristan', { health: 2, lastContact: '2026-11-20', nextStep: 'Book launch call', nextDue: '2026-11-25', journey: { onboarded: '2026-11-01', certified: '2026-11-06', oilDelivered: '2026-11-12' } }),
+  r('r1', 'Jenna Cole', 'Cole Roof Care', 'Growth', 'Tristan', { health: 1, lastContact: '2026-11-21', journey: { onboarded: '2026-09-29', certified: '2026-10-02', oilDelivered: '2026-10-09', marketingLive: '2026-10-14', firstLead: '2026-10-16', firstApptBooked: '2026-10-18', firstApptHeld: '2026-10-21', firstSale: '2026-10-30' } }),
+  r('r2', 'Derek Pham', 'Pham Exterior Coatings', 'Scale', 'Tristan', { health: 2, lastContact: '2026-11-22', journey: { onboarded: '2026-11-11' } }),
+  r('u4', 'Sam Whitaker', 'Whitaker Exteriors', 'Starter', 'Jack', { health: 3, lastContact: '2026-11-11', journey: { onboarded: '2026-10-21', certified: '2026-10-24' } }),
+  r('r3', 'Maria Santos', 'Santos Roofing', 'Growth', 'Jack', { health: 2, lastContact: '2026-11-21', journey: { onboarded: '2026-10-08', certified: '2026-10-12', oilDelivered: '2026-10-19' } }),
+  r('r4', 'Glen Archer', 'Archer Home Services', 'Starter', 'James', { health: 2, lastContact: '2026-11-18', journey: { onboarded: '2026-11-02' } }),
+  r('r5', 'Tasha Reid', 'Reid Roof Restore', 'Growth', 'Laurence', { health: 1, lastContact: '2026-11-20', journey: { onboarded: '2026-10-01', certified: '2026-10-05', oilDelivered: '2026-10-12', marketingLive: '2026-10-18' } }),
+];
+
 export function getCsmData(csm) {
-  return MEMBERS[csm] || { lastSync: '4:41 PM ET', touches: [], untouched: [] };
+  return MEMBERS[csm] || { lastSync: '4:41 PM ET', touches: [] };
 }

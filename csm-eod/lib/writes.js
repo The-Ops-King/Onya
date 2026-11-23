@@ -1,4 +1,5 @@
 import { HEALTH, TODAY, STEPS, gapSteps } from './config';
+import { addonWrites } from './addons';
 
 const hLabel = (v) => HEALTH.find((h) => h.v === Number(v))?.label || '';
 export const NOT_HELD = ['No-show', 'Rescheduled', 'Cancelled'];
@@ -13,7 +14,8 @@ export function buildQuestions(sec, touch, values) {
   const qs = [];
   for (const a of sec.always) {
     if (a.type === 'sale') {
-      qs.push({ key: 'sale', kind: 'sale', q: journey.firstSale ? 'New sale since last call?' : 'First sale yet?', first: !journey.firstSale, required: true });
+      // Only asked until the first sale is on record. After that, sales are logged via "+ Flag > Sale made".
+      if (!journey.firstSale) qs.push({ key: 'sale', kind: 'sale', q: 'First sale yet?', required: true });
     } else if (a.type === 'date') {
       qs.push({ key: a.key, kind: 'date', q: a.q });
     } else if (a.type === 'select') {
@@ -62,7 +64,6 @@ export function computeWrites(sec, touch, values, flags) {
   if (sec.callDateField && held) up(sec.callDateField, TODAY, { status: sec.callDateField === 'Last check-in date' ? 'new' : 'exists' });
   if (values.nextStep) up('Next step', values.nextStep, { from: cur.nextStep, status: 'exists' });
   if (values.nextDue) up('Next step due', values.nextDue, { from: cur.nextDue, status: 'exists' });
-  if (values.issues) up('Current issues', values.issues, { status: 'new' });
   if (values.health) up('Health Status', hLabel(values.health), { from: hLabel(cur.health), status: 'options' });
   if (sec.id === 'onboarding' && values.outcome === 'Onboarded') {
     up('Onboarding completed at', TODAY, { status: 'exists' });
@@ -93,11 +94,6 @@ export function computeWrites(sec, touch, values, flags) {
     }
   }
 
-  if (flags.refund?.on) {
-    w.push({ kind: 'create', table: 'Payments, Refunds & Disputes', field: 'New case', to: `Open · ${flags.refund.note || '—'}`, status: 'exists' });
-    up('Lifecycle Stage', 'Cancelling', { status: 'exists' });
-  }
-  if (flags.upsell?.on) w.push({ kind: 'create', table: 'Upsell Table', field: 'New upsell', to: `${flags.upsell.type || 'Other'} · $${Number(flags.upsell.amount || 0).toLocaleString()}`, status: 'exists' });
-  if (flags.escalate?.on) w.push({ kind: 'create', table: 'Customer tickets', field: 'New escalation', to: flags.escalate.note || 'Escalation', status: 'exists' });
+  w.push(...addonWrites(flags));
   return w;
 }

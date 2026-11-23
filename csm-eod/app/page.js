@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CSMS, SECTIONS, FLAGS, HEALTH, DATA_MAP, OPEN_QUESTIONS, TODAY, PITCH_RESULTS, UPSELL_TYPES, STEPS, EXPECTED } from '@/lib/config';
-import { getCsmData } from '@/lib/mock';
+import { CSMS, SECTIONS, HEALTH, DATA_MAP, OPEN_QUESTIONS, TODAY, PITCH_RESULTS, STEPS, EXPECTED } from '@/lib/config';
+import { ADDONS, ADDON_GROUPS } from '@/lib/addons';
+import { getCsmData, ROSTER } from '@/lib/mock';
 import { buildQuestions, computeWrites, missingRequired, complianceAlerts, callHeld } from '@/lib/writes';
+import { needsAttention, TOUCH_RULE } from '@/lib/touch';
 
-const SRC_ICON = { fathom: '🎥', sms: '💬', call: '📞', calendar: '📅' };
+const SRC_ICON = { fathom: '🎥', sms: '💬', call: '📞', calendar: '📅', manual: '✍️' };
 const QUICK_MS = 5000; // confirmed faster than this with zero edits = "quick confirm"
 const fmtDate = (d) => (d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '');
 const healthOf = (v) => HEALTH.find((h) => h.v === Number(v));
@@ -14,23 +16,51 @@ const secs = (ms) => (ms == null ? '—' : `${Math.round(ms / 1000)}s`);
 function initState(csm) {
   const data = getCsmData(csm);
   const cards = {};
-  for (const t of data.touches) {
-    cards[t.id] = {
+  for (const t of data.touches) cards[t.id] = newCard(t);
+  return { data: { ...data, touches: [...data.touches] }, cards, openedAt: Date.now() };
+}
+
+function newCard(t) {
+  const flags = JSON.parse(JSON.stringify(t.flags || {}));
+  // AI-detected issue / reorder become add-ons (only shown because they were detected)
+  if (t.values.issues) flags.issue = { on: true, text: t.values.issues, prov: t.prov.issues };
+  if (t.values.reorder && t.values.reorder !== 'Not discussed') flags.reorder = { on: true, status: t.values.reorder, prov: t.prov.reorder };
+  return {
       values: { ...t.values },
       prov: { ...t.prov },
-      flags: JSON.parse(JSON.stringify(t.flags || {})),
+      flags,
       confirmed: false,
       open: true,
-      showIssues: !!t.values.issues,
-      showFlags: false,
+      showAdd: false,
       showDetails: false,
       // behind-the-scenes timing
       seenAt: null,
       confirmedAt: null,
       edits: 0,
-    };
-  }
-  return { data, cards, openedAt: Date.now() };
+  };
+}
+
+// A touch the CSM adds by hand (not found in GHL/Fathom).
+function manualTouch(member, section, csm) {
+  const phase = member.current.journey?.firstLead ? 'checkin' : member.current.journey?.oilDelivered ? 'launch' : member.current.journey?.onboarded ? 'prelaunch' : 'onboarding';
+  return {
+    id: `m-${member.id}-${Date.now()}`,
+    manual: true,
+    memberId: member.id,
+    section,
+    phase,
+    name: member.name,
+    business: member.business,
+    pkg: member.pkg,
+    current: member.current,
+    sources: [{ kind: 'manual', label: 'Added by ' + csm, detail: 'not found in GHL / Fathom' }],
+    summary: 'Added by you. Nothing was synced for this conversation, so fill it in.',
+    evidence: [],
+    alerts: [],
+    flags: {},
+    values: { health: member.current.health },
+    prov: { health: 'airtable' },
+  };
 }
 
 export default function Page() {
@@ -39,7 +69,21 @@ export default function Page() {
   const [state, setState] = useState(() => initState('Tristan'));
   const [review, setReview] = useState(false);
   const [submittedAt, setSubmittedAt] = useState(null);
+  const [adding, setAdding] = useState(null); // null | { preselect?: memberId }
   const { data, cards } = state;
+
+  const addTouch = (member, section) => {
+    const t = manualTouch(member, section, csm);
+    setState((s) => ({ ...s, data: { ...s.data, touches: [...s.data.touches, t] }, cards: { ...s.cards, [t.id]: newCard(t) } }));
+    setAdding(null);
+    setTimeout(() => document.getElementById(t.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+  };
+  const removeTouch = (id) =>
+    setState((s) => {
+      const cards = { ...s.cards };
+      delete cards[id];
+      return { ...s, data: { ...s.data, touches: s.data.touches.filter((t) => t.id !== id) }, cards };
+    });
 
   useEffect(() => {
     setState(initState(csm));
@@ -103,6 +147,10 @@ export default function Page() {
             Demo with fictional members. Everything below is prefilled from today’s calls and texts. Check each card and fix anything that’s wrong.
             <span className="dot-ai" style={{ marginLeft: 6 }} /> = filled in for you.
           </p>
+          <div className="add-row">
+            <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
+            <span className="meta">Talked to someone who isn’t listed? Add them.</span>
+          </div>
 
           {SECTIONS.map((sec) => {
             const list = touches.filter((t) => t.section === sec.id);
@@ -123,6 +171,7 @@ export default function Page() {
                     patch={(p) => update(t.id, (c) => ({ ...c, ...p }))}
                     setFlag={(k, p) => update(t.id, (c) => ({ ...c, flags: { ...c.flags, [k]: { ...(c.flags[k] || {}), ...p } } }))}
                     onSeen={() => update(t.id, (c) => (c.seenAt ? c : { ...c, seenAt: Date.now() }))}
+                    onRemove={t.manual ? () => removeTouch(t.id) : null}
                   />
                 ))}
               </div>
@@ -130,7 +179,7 @@ export default function Page() {
           })}
           {touches.length === 0 && <div className="empty">No calls or texts synced for {csm} today. (Demo data is only loaded for Tristan and Jack.)</div>}
 
-          <Untouched list={data.untouched} />
+          <Untouched list={needsAttention(ROSTER, csm, new Set(touches.map((t) => t.memberId || t.id)))} onLog={(id) => setAdding({ preselect: id })} />
         </div>
       )}
 
@@ -153,6 +202,16 @@ export default function Page() {
         </div>
       )}
 
+      {adding && (
+        <AddClient
+          csm={csm}
+          preselect={adding.preselect}
+          already={new Set(touches.map((t) => t.memberId || t.id))}
+          onAdd={addTouch}
+          onClose={() => setAdding(null)}
+        />
+      )}
+
       {review && (
         <Review
           allWrites={allWrites}
@@ -173,7 +232,7 @@ export default function Page() {
 
 /* ---------- Card ---------- */
 
-function Card({ t, sec, c, setValue, patch, setFlag, onSeen }) {
+function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onRemove }) {
   const ref = useRef(null);
   useEffect(() => {
     if (!ref.current || c?.seenAt) return;
@@ -188,7 +247,8 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen }) {
   const questions = buildQuestions(sec, t, v);
   const missing = missingRequired(sec, t, v);
   const compliance = complianceAlerts(sec, t, v);
-  const activeFlags = FLAGS.filter((f) => c.flags[f.key]?.on);
+  const activeFlags = ADDONS.filter((f) => c.flags[f.key]?.on);
+  const canAdd = (a) => !c.flags[a.key]?.on && (!a.onlyAfterFirstSale || t.current.journey?.firstSale);
 
   if (!c.open) {
     const h = healthOf(v.health);
@@ -198,9 +258,9 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen }) {
           <span className="ok">✓</span>
           <b>{t.name}</b>
           <span className="sum">{v.outcome || '—'}</span>
-          {v.sale === 'Yes' && <span className="pill good">Sale</span>}
+          {v.sale === 'Yes' && <span className="pill good">First sale</span>}
           {activeFlags.map((f) => (
-            <span key={f.key} className={`pill ${f.bad ? 'bad' : 'good'}`}>{f.label}</span>
+            <span key={f.key} className={`pill ${f.tone}`}>{f.label}</span>
           ))}
           <span className="sum muted">→ {v.nextStep || '—'} {v.nextDue ? fmtDate(v.nextDue) : ''}</span>
           <span className="spacer" />
@@ -211,12 +271,13 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen }) {
   }
 
   return (
-    <div className="card" ref={ref}>
+    <div className="card" ref={ref} id={t.id}>
       {/* Header: identity left, health right — same place on every card */}
       <div className="card-h">
         <div className="who">
           <div className="name">
             {t.name} <span className="biz">{t.business}</span>
+            {t.manual && <span className="pill manual">added by you</span>}
           </div>
           <div className="summary-line">
             {t.sources.map((s, i) => (
@@ -268,55 +329,39 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen }) {
         )}
         {!callHeld(sec, v) && v.outcome && <div className="muted small">Call didn’t happen, so no call questions.</div>}
 
-        {c.showIssues && (
-          <Labeled label="Issues / concerns" ai={ai('issues')}>
-            <textarea value={v.issues || ''} onChange={(e) => setValue('issues', e.target.value)} />
-          </Labeled>
-        )}
-
         {activeFlags.length > 0 && (
           <div className="flag-rows">
-            {activeFlags.map((f) => (
-              <div className={`flag-row ${f.bad ? 'bad' : 'good'}`} key={f.key}>
-                <span className="flag-name">
-                  {c.flags[f.key]?.prov === 'ai' && <span className="dot-ai" />} {f.label}
-                </span>
-                {f.key === 'upsell' ? (
-                  <>
-                    <select value={c.flags.upsell.type || ''} onChange={(e) => setFlag('upsell', { type: e.target.value })}>
-                      <option value="">Type…</option>
-                      {UPSELL_TYPES.map((o) => (
-                        <option key={o}>{o}</option>
-                      ))}
-                    </select>
-                    <input className="money" placeholder="$ collected" value={c.flags.upsell.amount || ''} onChange={(e) => setFlag('upsell', { amount: e.target.value.replace(/[^\d.]/g, '') })} />
-                  </>
-                ) : (
-                  <input placeholder={f.placeholder} value={c.flags[f.key]?.note || ''} onChange={(e) => setFlag(f.key, { note: e.target.value })} />
-                )}
-                <button className="x" onClick={() => setFlag(f.key, { on: false })} aria-label="Remove">×</button>
-              </div>
+            {activeFlags.map((a) => (
+              <AddonRow key={a.key} a={a} val={c.flags[a.key]} set={(p) => setFlag(a.key, p)} />
             ))}
           </div>
         )}
 
-        {c.showFlags && (
-          <div className="flag-menu">
-            {FLAGS.filter((f) => !c.flags[f.key]?.on).map((f) => (
-              <button key={f.key} className="chip" onClick={() => { setFlag(f.key, { on: true }); patch({ showFlags: false }); }}>
-                {f.label}
-              </button>
-            ))}
+        {c.showAdd && (
+          <div className="add-menu">
+            {ADDON_GROUPS.map((g) => {
+              const items = ADDONS.filter((a) => a.group === g && canAdd(a));
+              if (!items.length) return null;
+              return (
+                <div className="add-group" key={g}>
+                  <span className="add-g">{g}</span>
+                  {items.map((a) => (
+                    <button key={a.key} className="chip" onClick={() => { setFlag(a.key, { on: true, prov: 'edited' }); patch({ showAdd: false }); }}>
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
 
       <div className="card-f">
         <div className="adders">
-          {!c.showIssues && (
-            <button className="link" onClick={() => patch({ showIssues: true })}>+ Issue</button>
-          )}
-          <button className="link" onClick={() => patch({ showFlags: !c.showFlags })}>+ Flag</button>
+          <button className="link" onClick={() => patch({ showAdd: !c.showAdd })}>{c.showAdd ? '× Close' : '+ Add'}</button>
+          <span className="meta add-hint">issue, marketing, leads, reorder, sale, refund…</span>
+          {onRemove && <button className="link danger" onClick={onRemove}>Remove</button>}
         </div>
         <div className="right">
           {missing.length > 0 && <span className="need">Needs: {missing.join(', ')}</span>}
@@ -325,6 +370,42 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AddonRow({ a, val, set }) {
+  const hint = a.hint?.(val);
+  return (
+    <div className={`flag-row ${a.tone}`}>
+      <span className="flag-name">
+        {val.prov === 'ai' && <span className="dot-ai" title="Detected in the call/text. Check it." />}
+        {a.label}
+      </span>
+      {a.fields.map((f) => {
+        const v = val[f.k] || '';
+        const on = (x) => set({ [f.k]: x });
+        if (f.type === 'select')
+          return (
+            <select key={f.k} value={v} onChange={(e) => on(e.target.value)} className="sel">
+              <option value="">Select…</option>
+              {f.options.map((o) => (
+                <option key={o}>{o}</option>
+              ))}
+            </select>
+          );
+        if (f.type === 'date') return <input key={f.k} type="date" className="dt" value={v} onChange={(e) => on(e.target.value)} />;
+        if (f.type === 'money' || f.type === 'number')
+          return (
+            <label key={f.k} className="mini">
+              {f.ph}
+              <input className="money" inputMode="numeric" value={v} onChange={(e) => on(e.target.value.replace(/[^0-9.]/g, ''))} />
+            </label>
+          );
+        return <input key={f.k} className="grow" placeholder={f.ph} value={v} onChange={(e) => on(e.target.value)} />;
+      })}
+      <button className="x" onClick={() => set({ on: false })} aria-label="Remove">×</button>
+      {hint && <div className="flag-hint">{hint}</div>}
     </div>
   );
 }
@@ -388,8 +469,14 @@ function Question({ q, v, ai, setValue }) {
             {val === 'Yes' && (
               <>
                 <input type="date" value={v.saleDate || ''} onChange={(e) => setValue('saleDate', e.target.value)} title="Sale date" />
-                <input className="money" placeholder="$ job" value={v.jobValue || ''} onChange={(e) => setValue('jobValue', e.target.value.replace(/[^\d.]/g, ''))} />
-                <input className="money" placeholder="$ collected" value={v.cashCollected || ''} onChange={(e) => setValue('cashCollected', e.target.value.replace(/[^\d.]/g, ''))} />
+                <label className="mini">
+                  $ job
+                  <input className="money" inputMode="numeric" value={v.jobValue || ''} onChange={(e) => setValue('jobValue', e.target.value.replace(/[^0-9.]/g, ''))} />
+                </label>
+                <label className="mini">
+                  $ collected
+                  <input className="money" inputMode="numeric" value={v.cashCollected || ''} onChange={(e) => setValue('cashCollected', e.target.value.replace(/[^0-9.]/g, ''))} />
+                </label>
               </>
             )}
           </>
@@ -459,28 +546,102 @@ function Details({ t, sec, c }) {
 
 /* ---------- Untouched ---------- */
 
-function Untouched({ list }) {
-  const [open, setOpen] = useState(false);
+const LEVEL = { 3: ['Overdue', 'bad'], 2: ['Touch today', 'warn'], 1: ['Due tomorrow', 'soon'] };
+
+function Untouched({ list, onLog }) {
+  const [open, setOpen] = useState(true);
   if (!list?.length) return null;
   return (
     <div className="section">
       <button className="untouched-toggle" onClick={() => setOpen(!open)}>
-        {open ? '▾' : '▸'} {list.length} assigned member{list.length > 1 ? 's' : ''} need attention (no contact today)
+        {open ? '▾' : '▸'} Needs attention: {list.length} assigned member{list.length > 1 ? 's' : ''} not contacted today
       </button>
+      <div className="meta" style={{ marginTop: 2 }}>Rule: {TOUCH_RULE.perWeek} touches a week, no more than {TOUCH_RULE.maxGapDays} days between touches.</div>
       {open && (
         <div className="card untouched">
           {list.map((u) => {
-            const h = healthOf(u.health);
+            const h = healthOf(u.current.health);
+            const [lvl, cls] = LEVEL[u.status.level];
             return (
               <div className="row" key={u.id}>
+                <span className={`lvl ${cls}`}>{lvl}</span>
                 <span className="hdot" style={{ background: h?.color }} title={h?.label} />
                 <b>{u.name}</b>
-                <span className="reasons">{u.reasons.join(' · ')}</span>
+                <span className="meta">{u.status.week}/{TOUCH_RULE.perWeek} this week</span>
+                <span className="reasons">{u.status.reasons.join(' · ')}</span>
+                <span className="spacer" />
+                <button className="link" onClick={() => onLog(u.id)}>Log a touch</button>
               </div>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------- Add a client ---------- */
+
+const ADD_TYPES = [
+  ['onboarding', 'Onboarding call'],
+  ['prelaunch', 'Pre-launch call'],
+  ['launch', 'Launch call'],
+  ['checkin', 'Check-in call'],
+  ['comms', 'Text / phone'],
+];
+
+function AddClient({ csm, preselect, already, onAdd, onClose }) {
+  const [q, setQ] = useState('');
+  const [all, setAll] = useState(false);
+  const [picked, setPicked] = useState(() => ROSTER.find((m) => m.id === preselect) || null);
+  const [type, setType] = useState('');
+  const list = ROSTER.filter((m) => (all || m.csm === csm) && !already.has(m.id))
+    .filter((m) => !q || `${m.name} ${m.business}`.toLowerCase().includes(q.toLowerCase()));
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
+        <h3>Add a client</h3>
+        <div className="meta">For a conversation that didn’t sync from GHL or Fathom.</div>
+
+        {!picked ? (
+          <>
+            <input className="search" autoFocus placeholder="Search name or business…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <label className="meta check">
+              <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> Show members assigned to other CSMs
+            </label>
+            <div className="pick-list">
+              {list.map((m) => (
+                <button key={m.id} className="pick" onClick={() => setPicked(m)}>
+                  <b>{m.name}</b> <span className="muted">{m.business}</span>
+                  {m.csm !== csm && <span className="pill manual">{m.csm}</span>}
+                </button>
+              ))}
+              {list.length === 0 && <div className="meta" style={{ padding: 10 }}>No matches. Not in Airtable? That’s a sales→CS handoff issue. Flag it to ops.</div>}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="picked">
+              <b>{picked.name}</b> <span className="muted">{picked.business}</span>
+              {picked.csm !== csm && <span className="pill manual">{picked.csm}’s client</span>}
+              <span className="spacer" />
+              {!preselect && <button className="link" onClick={() => setPicked(null)}>change</button>}
+            </div>
+            <div className="meta" style={{ margin: '12px 0 6px' }}>What kind of conversation?</div>
+            <div className="type-grid">
+              {ADD_TYPES.map(([id, label]) => (
+                <button key={id} className={`chip ${type === id ? 'on' : ''}`} onClick={() => setType(id)}>{label}</button>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="modal-f">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" disabled={!picked || !type} onClick={() => onAdd(picked, type)}>Add card</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -493,9 +654,10 @@ function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm 
   const timing = allWrites.map(({ t }) => {
     const c = cards[t.id];
     const ms = c.confirmedAt && c.seenAt ? c.confirmedAt - c.seenAt : null;
-    return { name: t.name, ms, edits: c.edits, confirmed: c.confirmed, quick: c.confirmed && ms != null && ms < QUICK_MS && c.edits === 0 };
+    return { name: t.name, manual: t.manual, ms, edits: c.edits, confirmed: c.confirmed, quick: c.confirmed && ms != null && ms < QUICK_MS && c.edits === 0 };
   });
   const quick = timing.filter((x) => x.quick).length;
+  const manual = allWrites.filter(({ t }) => t.manual).length;
   const edits = timing.reduce((n, x) => n + x.edits, 0);
 
   return (
@@ -542,12 +704,13 @@ function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm 
             <span>Time on form: <b>{secs(now - openedAt)}</b></span>
             <span>AI values changed: <b>{edits}</b></span>
             <span>Quick confirms (&lt;{QUICK_MS / 1000}s, no edits): <b className={quick ? 'bad-t' : ''}>{quick}</b></span>
+            <span>Added by hand (missed by sync): <b className={manual ? 'bad-t' : ''}>{manual}</b></span>
           </div>
           <table>
             <tbody>
               {timing.map((x) => (
                 <tr key={x.name}>
-                  <td>{x.name}</td>
+                  <td>{x.name}{x.manual && <span className="muted"> · added by hand</span>}</td>
                   <td>{x.confirmed ? secs(x.ms) : 'not checked'}</td>
                   <td>{x.edits} edit{x.edits === 1 ? '' : 's'}</td>
                   <td style={{ textAlign: 'right' }}>{x.quick && <span className="st viktor">quick confirm</span>}</td>
@@ -610,7 +773,7 @@ function DataMap() {
             <tr><td><b>Onboarding</b></td><td>Pitched SEO/AEO? → result</td><td>—</td></tr>
             <tr><td><b>Pre-launch</b></td><td>—</td><td>{EXPECTED.prelaunch.map((k) => STEPS[k].label).join(', ')}</td></tr>
             <tr><td><b>Launch</b></td><td>Pitched Affirm? → result · Marketing go-live date</td><td>{EXPECTED.launch.map((k) => STEPS[k].label).join(', ')}</td></tr>
-            <tr><td><b>Check-in</b></td><td>First sale yet? / New sale? → date, $ job, $ collected · Reorder</td><td>{EXPECTED.checkin.map((k) => STEPS[k].label).join(', ')}, then first appointment booked / held once a first lead exists</td></tr>
+            <tr><td><b>Check-in</b></td><td>First sale yet? → date, $ job, $ collected (only until a first sale is on record; after that it’s an optional flag) · Reorder</td><td>{EXPECTED.checkin.map((k) => STEPS[k].label).join(', ')}, then first appointment booked / held once a first lead exists</td></tr>
             <tr><td><b>Texts / phone</b></td><td>Sale?</td><td>Same as the member’s current stage</td></tr>
           </tbody>
         </table>

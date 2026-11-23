@@ -86,7 +86,7 @@ export const SECTIONS = [
     source: 'Fathom + GHL "Check-in" calendar',
     callDateField: 'Last check-in date',
     outcomes: ['Completed', 'No-show', 'Rescheduled'],
-    always: [{ key: 'sale', q: 'sale', type: 'sale' }, { key: 'reorder', q: 'Reorder?', type: 'select', options: ['Not discussed', 'Pitched', 'Committed', 'Not now'] }],
+    always: [{ key: 'sale', q: 'sale', type: 'sale' }], // everything else is optional via "+ Add"
   },
   {
     id: 'comms',
@@ -100,13 +100,6 @@ export const SECTIONS = [
 
 export const PITCH_RESULTS = ['Sold', 'Interested – follow up', 'Not interested'];
 
-export const FLAGS = [
-  { key: 'refund', label: 'Refund / cancel request', bad: true, placeholder: 'What did they say?' },
-  { key: 'upsell', label: 'Upsell sold', placeholder: '' },
-  { key: 'escalate', label: 'Needs escalation', bad: true, placeholder: 'What do you need?' },
-  { key: 'caseStudy', label: 'Case study / testimonial', placeholder: 'Type / status' },
-];
-export const UPSELL_TYPES = ['Skid', 'Gutter Guards', 'Financing', 'SEO', 'AEO', 'SEO + AEO', 'Package upgrade', 'Lead purchase', 'Other'];
 
 // "What data we need" tab.
 export const DATA_MAP = [
@@ -128,6 +121,7 @@ export const DATA_MAP = [
   ['Refund / cancel request', 'Transcript / SMS', 'Payments, Refunds & Disputes (row) + Lifecycle Stage', 'exists', ''],
   ['Upsell sold', 'Transcript', 'Upsell Table (row)', 'exists', ''],
   ['Reorder status', 'Transcript', 'Reorder Pipeline.Reorder Status', 'exists', ''],
+  ['Touch rule (3/week, max 3 days apart)', 'Last touch from GHL/Fathom + EOD', 'Members.Last Contact, Touch days this week', 'exists', 'Drives "Needs attention". Confirm what computes Touch days this week and that an EOD-logged touch counts.'],
   ['EOD submission log', 'This form', 'EOD log (one row per CSM per day)', 'new', 'Summary, members touched, counts, submitted at.'],
 ];
 
@@ -139,4 +133,6 @@ export const OPEN_QUESTIONS = [
   'Call types: one GHL calendar per type vs. naming convention in titles.',
   'Upsells: does the EOD replace the portal Upsell form for CSM-sold upsells?',
   'Gap questions: CSM answers "Not sure" → do we chase it (task) or just leave blank?',
+  'Touch rule: are the 3 days calendar days or business days? Does the week run Mon–Sun? (Demo assumes calendar days, Mon–Sun.)',
+  'Later sales (after the first): optional "+ Flag → Sale made" only, or ask every check-in?',
 ];
