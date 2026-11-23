@@ -340,7 +340,7 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onConfirm, onRemove
     <motion.div layout="position" className={`card ${c.confirmed ? 'done' : ''}`} ref={ref} id={t.id} transition={SPRING}>
       {/* Collapsed summary (after "Looks right") */}
       <Drawer open={!c.open}>
-        <button className="collapsed" onClick={() => patch({ open: true })}>
+        <button className="collapsed" onClick={() => patch({ open: true, confirmed: false, confirmedAt: null })} title="Reopen to edit (needs re-checking)">
           <span className="ok">✓</span>
           <b>{t.name}</b>
           <span className="sum">{v.outcome || '—'}</span>
