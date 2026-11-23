@@ -5,7 +5,7 @@ const hLabel = (v) => HEALTH.find((h) => h.v === Number(v))?.label || '';
 export const NOT_HELD = ['No-show', 'Rescheduled', 'Cancelled'];
 const blank = (v) => v === '' || v == null;
 
-export const callHeld = (sec, values) => sec.id === 'comms' || (!blank(values.outcome) && !NOT_HELD.includes(values.outcome));
+export const callHeld = (sec, values) => sec.id === 'comms' || sec.id === 'outreach' || (!blank(values.outcome) && !NOT_HELD.includes(values.outcome));
 
 // The questions a card shows, given the member's current Airtable data.
 export function buildQuestions(sec, touch, values) {
@@ -16,6 +16,9 @@ export function buildQuestions(sec, touch, values) {
     if (a.type === 'sale') {
       // Only asked until the first sale is on record. After that, sales are logged via "+ Flag > Sale made".
       if (!journey.firstSale) qs.push({ key: 'sale', kind: 'sale', q: 'First sale yet?', required: true });
+    } else if (a.type === 'ghost') {
+      const already = touch.current.lifecycle === 'Ghosting';
+      qs.push({ key: 'ghosting', kind: 'yn', q: already ? 'Still ghosting?' : 'Mark as ghosting?', required: true });
     } else if (a.type === 'date') {
       qs.push({ key: a.key, kind: 'date', q: a.q });
     } else if (a.type === 'select') {
@@ -72,6 +75,8 @@ export function computeWrites(sec, touch, values, flags) {
 
   for (const q of buildQuestions(sec, touch, values)) {
     const v = values[q.key];
+    if (q.key === 'ghosting' && v === 'Yes' && touch.current.lifecycle !== 'Ghosting') up('Lifecycle Stage', 'Ghosting', { from: touch.current.lifecycle, status: 'exists' });
+    if (q.key === 'ghosting' && v === 'No' && touch.current.lifecycle === 'Ghosting') up('Lifecycle Stage', 'Active', { from: 'Ghosting', status: 'exists' });
     if (q.kind === 'pitch' && v === 'Yes') {
       const base = q.key === 'aeo' ? 'AEO/SEO' : 'Affirm';
       up(`${base} pitched at`, TODAY, { status: 'new' });

@@ -95,6 +95,15 @@ export const MEMBERS = {
         flags: { caseStudy: { on: true, note: 'Ask for selfie video', prov: 'ai' } },
       }),
       m({
+        id: 't10', section: 'outreach', name: 'Kurt Mendez', business: 'Mendez Roofing LLC', pkg: 'Growth',
+        current: { stage: '6. Product delivered', lifecycle: 'Active', health: 3, nextStep: 'Check-in', nextDue: '2026-11-20', lastContact: '2026-11-12', journey: { onboarded: '2026-10-06', certified: '2026-10-09', oilDelivered: '2026-10-16' } },
+        sources: [{ kind: 'sms', label: 'GHL SMS', detail: '3 sent, 0 replies' }, { kind: 'call', label: 'GHL call', detail: '1 missed, voicemail' }],
+        summary: '4 attempts since 11/18 (3 texts, 1 call + voicemail). Last reply 11/12, 11 days ago.',
+        evidence: [{ t: 'SMS 11/23 10:05 AM', who: 'Tristan', text: 'Hey Kurt, checking in on the campaign. Got 10 min today or tomorrow?' }],
+        values: { outcome: 'Left voicemail', nextStep: 'Call + text again', nextDue: '2026-11-25', health: 4, ghosting: 'Yes' },
+        prov: { outcome: 'ai', nextStep: 'ai', nextDue: 'ai', health: 'ai', ghosting: 'ai' },
+      }),
+      m({
         id: 't9', section: 'comms', phase: 'launch', name: 'Tony Abara', business: 'Abara Home Care', pkg: 'Starter',
         current: { stage: '5. Product ordered - not delivered', health: 2, nextStep: 'Confirm delivery', nextDue: '2026-11-24', lastContact: '2026-11-21', journey: { onboarded: '2026-11-05', certified: '2026-11-12' } },
         sources: [{ kind: 'call', label: 'GHL phone call', detail: '6 min · 12:20 PM' }],

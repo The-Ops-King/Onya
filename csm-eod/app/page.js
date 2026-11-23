@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CSMS, SECTIONS, HEALTH, DATA_MAP, OPEN_QUESTIONS, TODAY, PITCH_RESULTS, STEPS, EXPECTED } from '@/lib/config';
+import { CSMS, SECTIONS, HEALTH, DATA_MAP, OPEN_QUESTIONS, DECISIONS, TODAY, PITCH_RESULTS, STEPS, EXPECTED } from '@/lib/config';
 import { ADDONS, ADDON_GROUPS } from '@/lib/addons';
 import { getCsmData, ROSTER } from '@/lib/mock';
 import { buildQuestions, computeWrites, missingRequired, complianceAlerts, callHeld } from '@/lib/writes';
@@ -180,6 +180,11 @@ export default function Page() {
           {touches.length === 0 && <div className="empty">No calls or texts synced for {csm} today. (Demo data is only loaded for Tristan and Jack.)</div>}
 
           <Untouched list={needsAttention(ROSTER, csm, new Set(touches.map((t) => t.memberId || t.id)))} onLog={(id) => setAdding({ preselect: id })} />
+
+          <div className="add-row bottom">
+            <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
+            <span className="meta">Talked to someone who isn’t listed? Add them.</span>
+          </div>
         </div>
       )}
 
@@ -483,6 +488,7 @@ function Question({ q, v, ai, setValue }) {
         )}
         {q.kind === 'date' && <input type="date" value={val} onChange={(e) => setValue(q.key, e.target.value)} />}
         {q.kind === 'select' && <Seg options={q.options} value={val} onChange={(x) => setValue(q.key, x)} />}
+        {q.kind === 'yn' && <Seg options={['Yes', 'No']} value={val} onChange={(x) => setValue(q.key, x)} />}
       </div>
     </div>
   );
@@ -588,6 +594,7 @@ const ADD_TYPES = [
   ['launch', 'Launch call'],
   ['checkin', 'Check-in call'],
   ['comms', 'Text / phone'],
+  ['outreach', 'Reached out, no response'],
 ];
 
 function AddClient({ csm, preselect, already, onAdd, onClose }) {
@@ -812,6 +819,13 @@ function DataMap() {
           </tbody>
         </table>
       </div>
+
+      <h2>Decided</h2>
+      <ul>
+        {DECISIONS.map((q, i) => (
+          <li key={i}>{q}</li>
+        ))}
+      </ul>
 
       <h2>Open questions</h2>
       <ol>

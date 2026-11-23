@@ -96,6 +96,14 @@ export const SECTIONS = [
     outcomes: null, // free text
     always: [{ key: 'sale', q: 'sale', type: 'sale' }],
   },
+  {
+    id: 'outreach',
+    title: 'Reached out, no response',
+    source: 'GHL outbound texts / calls with no reply',
+    callDateField: null,
+    outcomes: ['No response', 'Left voicemail', 'Bad contact info'],
+    always: [{ key: 'ghosting', type: 'ghost' }],
+  },
 ];
 
 export const PITCH_RESULTS = ['Sold', 'Interested – follow up', 'Not interested'];
@@ -121,18 +129,25 @@ export const DATA_MAP = [
   ['Refund / cancel request', 'Transcript / SMS', 'Payments, Refunds & Disputes (row) + Lifecycle Stage', 'exists', ''],
   ['Upsell sold', 'Transcript', 'Upsell Table (row)', 'exists', ''],
   ['Reorder status', 'Transcript', 'Reorder Pipeline.Reorder Status', 'exists', ''],
-  ['Touch rule (3/week, max 3 days apart)', 'Last touch from GHL/Fathom + EOD', 'Members.Last Contact, Touch days this week', 'exists', 'Drives "Needs attention". Confirm what computes Touch days this week and that an EOD-logged touch counts.'],
+  ['Touch rule (3/week, max 3 calendar days apart)', 'Measured outside the EOD', 'Members.Last Contact, Touch days this week', 'exists', 'Read-only for the EOD. Drives "Needs attention".'],
+  ['Outreach with no reply (ghosting)', 'GHL outbound SMS/calls with no inbound reply', 'Members.Lifecycle Stage = Ghosting', 'exists', 'Attempts + last reply date come from GHL. CSM confirms before Lifecycle flips to Ghosting.'],
   ['EOD submission log', 'This form', 'EOD log (one row per CSM per day)', 'new', 'Summary, members touched, counts, submitted at.'],
 ];
 
 export const OPEN_QUESTIONS = [
-  'Prefill timing: event-driven (webhooks as touches happen) vs. at form load vs. every 30 min.',
-  'Access: name-picker link is open to anyone with the URL. Shared passcode at minimum?',
-  'KPI: "first sale" vs "first cash collected" — form captures both until decided.',
-  'Viktor: which Members fields does it overwrite nightly? EOD writes to those need "only if empty" or a hand-off.',
+  'Prefill timing: process each call/text as it happens (recommended) vs. at form load vs. every 30 min.',
+  'Access: name-picker link is open to anyone with the URL. Shared passcode?',
+  'KPI: "first sale" vs "first cash collected". Form captures both, so this only decides the dashboard number.',
+  'Viktor: which Members fields does it overwrite? EOD writes to those need "only if empty" or a skip.',
+  'Last Contact: touches are measured elsewhere. Should the EOD stop writing Last Contact too?',
   'Call types: one GHL calendar per type vs. naming convention in titles.',
   'Upsells: does the EOD replace the portal Upsell form for CSM-sold upsells?',
-  'Gap questions: CSM answers "Not sure" → do we chase it (task) or just leave blank?',
-  'Touch rule: are the 3 days calendar days or business days? Does the week run Mon–Sun? (Demo assumes calendar days, Mon–Sun.)',
-  'Later sales (after the first): optional "+ Flag → Sale made" only, or ask every check-in?',
+];
+
+// Decided
+export const DECISIONS = [
+  'Touch rule uses calendar days.',
+  'EOD submissions do not count toward Touch days this week (measured elsewhere).',
+  'Gap question answered "Not sure": ask again next time.',
+  'First sale is only asked until one is on record; later sales are an optional add-on.',
 ];
