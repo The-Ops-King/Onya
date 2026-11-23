@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence, MotionConfig } from 'motion/react';
 import { CSMS, SECTIONS, HEALTH, DATA_MAP, OPEN_QUESTIONS, DECISIONS, TODAY, PITCH_RESULTS, STEPS, EXPECTED } from '@/lib/config';
 import { ADDONS, ADDON_GROUPS } from '@/lib/addons';
 import { getCsmData, ROSTER } from '@/lib/mock';
@@ -12,6 +13,49 @@ const QUICK_MS = 5000; // confirmed faster than this with zero edits = "quick co
 const fmtDate = (d) => (d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '');
 const healthOf = (v) => HEALTH.find((h) => h.v === Number(v));
 const secs = (ms) => (ms == null ? '—' : `${Math.round(ms / 1000)}s`);
+const digits = (s) => s.replace(/[^0-9.]/g, '');
+
+// Motion presets
+const EASE = [0.32, 0.72, 0, 1];
+const SPRING = { type: 'spring', stiffness: 520, damping: 40, mass: 0.8 };
+const DRAWER = { duration: 0.32, ease: EASE };
+
+// Smooth open/close for any block.
+function Drawer({ open, children, className }) {
+  return (
+    <AnimatePresence initial={false}>
+      {open && (
+        <motion.div
+          className={className}
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={DRAWER}
+          style={{ overflow: 'hidden' }}
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function Modal({ onClose, narrow, children }) {
+  return (
+    <motion.div className="modal-bg" onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+      <motion.div
+        className={`modal ${narrow ? 'narrow' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+        initial={{ opacity: 0, y: 18, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.98 }}
+        transition={SPRING}
+      >
+        {children}
+      </motion.div>
+    </motion.div>
+  );
+}
 
 function initState(csm) {
   const data = getCsmData(csm);
@@ -26,23 +70,24 @@ function newCard(t) {
   if (t.values.issues) flags.issue = { on: true, text: t.values.issues, prov: t.prov.issues };
   if (t.values.reorder && t.values.reorder !== 'Not discussed') flags.reorder = { on: true, status: t.values.reorder, prov: t.prov.reorder };
   return {
-      values: { ...t.values },
-      prov: { ...t.prov },
-      flags,
-      confirmed: false,
-      open: true,
-      showAdd: false,
-      showDetails: false,
-      // behind-the-scenes timing
-      seenAt: null,
-      confirmedAt: null,
-      edits: 0,
+    values: { ...t.values },
+    prov: { ...t.prov },
+    flags,
+    confirmed: false,
+    open: true,
+    showAdd: false,
+    showDetails: false,
+    // behind-the-scenes timing
+    seenAt: null,
+    confirmedAt: null,
+    edits: 0,
   };
 }
 
 // A touch the CSM adds by hand (not found in GHL/Fathom).
 function manualTouch(member, section, csm) {
-  const phase = member.current.journey?.firstLead ? 'checkin' : member.current.journey?.oilDelivered ? 'launch' : member.current.journey?.onboarded ? 'prelaunch' : 'onboarding';
+  const j = member.current.journey || {};
+  const phase = j.firstLead ? 'checkin' : j.oilDelivered ? 'launch' : j.onboarded ? 'prelaunch' : 'onboarding';
   return {
     id: `m-${member.id}-${Date.now()}`,
     manual: true,
@@ -70,13 +115,54 @@ export default function Page() {
   const [review, setReview] = useState(false);
   const [submittedAt, setSubmittedAt] = useState(null);
   const [adding, setAdding] = useState(null); // null | { preselect?: memberId }
+  const [openSec, setOpenSec] = useState(null);
   const { data, cards } = state;
+  const touches = data.touches;
+
+  const sections = SECTIONS.map((sec) => {
+    const list = touches.filter((t) => t.section === sec.id);
+    const done = list.filter((t) => cards[t.id]?.confirmed).length;
+    return { sec, list, done, complete: list.length > 0 && done === list.length };
+  }).filter((s) => s.list.length);
+
+  const firstIncomplete = (exceptId) => sections.find((s) => !s.complete && s.sec.id !== exceptId)?.sec.id ?? null;
+
+  // On load / CSM switch: open the first section with unchecked cards.
+  useEffect(() => {
+    const s = initState(csm);
+    setState(s);
+    setSubmittedAt(null);
+    const first = SECTIONS.find((sec) => s.data.touches.some((t) => t.section === sec.id));
+    setOpenSec(first?.id ?? null);
+  }, [csm]);
+
+  const update = (id, fn) => setState((s) => ({ ...s, cards: { ...s.cards, [id]: fn(s.cards[id]) } }));
+
+  const setValue = (id, key, val) =>
+    update(id, (c) => {
+      const wasAi = c.prov[key] === 'ai';
+      return { ...c, values: { ...c.values, [key]: val }, prov: { ...c.prov, [key]: 'edited' }, edits: c.edits + (wasAi ? 1 : 0) };
+    });
+
+  const confirmCard = (t) => {
+    update(t.id, (c) => ({ ...c, confirmed: true, open: false, showAdd: false, showDetails: false, confirmedAt: Date.now() }));
+    // If that finished the section, glide to the next unfinished one.
+    const s = sections.find((x) => x.sec.id === t.section);
+    if (s && s.done + 1 === s.list.length) {
+      const next = firstIncomplete(t.section);
+      setTimeout(() => {
+        setOpenSec(next);
+        if (next) setTimeout(() => document.getElementById('sec-' + next)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 360);
+      }, 380);
+    }
+  };
 
   const addTouch = (member, section) => {
     const t = manualTouch(member, section, csm);
     setState((s) => ({ ...s, data: { ...s.data, touches: [...s.data.touches, t] }, cards: { ...s.cards, [t.id]: newCard(t) } }));
     setAdding(null);
-    setTimeout(() => document.getElementById(t.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+    setOpenSec(section);
+    setTimeout(() => document.getElementById(t.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 420);
   };
   const removeTouch = (id) =>
     setState((s) => {
@@ -85,26 +171,8 @@ export default function Page() {
       return { ...s, data: { ...s.data, touches: s.data.touches.filter((t) => t.id !== id) }, cards };
     });
 
-  useEffect(() => {
-    setState(initState(csm));
-    setSubmittedAt(null);
-  }, [csm]);
-
-  const update = (id, fn) => setState((s) => ({ ...s, cards: { ...s.cards, [id]: fn(s.cards[id]) } }));
-
-  const setValue = (id, key, val) =>
-    update(id, (c) => {
-      const values = { ...c.values, [key]: val };
-      const flags = { ...c.flags };
-      if ((key === 'affirmResult' || key === 'aeoResult') && val === 'Sold' && !flags.upsell?.on) {
-        flags.upsell = { on: true, type: key === 'affirmResult' ? 'Financing' : 'SEO + AEO', amount: '' };
-      }
-      const wasAi = c.prov[key] === 'ai';
-      return { ...c, values, flags, prov: { ...c.prov, [key]: 'edited' }, edits: c.edits + (wasAi ? 1 : 0) };
-    });
-
-  const touches = data.touches;
   const confirmedCount = touches.filter((t) => cards[t.id]?.confirmed).length;
+  const pct = touches.length ? (confirmedCount / touches.length) * 100 : 0;
 
   const allWrites = useMemo(
     () =>
@@ -116,17 +184,16 @@ export default function Page() {
     [touches, cards, csm]
   );
 
+  const attention = needsAttention(ROSTER, csm, new Set(touches.map((t) => t.memberId || t.id)));
+
   return (
-    <>
+    <MotionConfig reducedMotion="user">
       <div className="top">
         <div className="top-inner">
           <div className="brand">
             Onya <span>· End of Day</span>
           </div>
-          <div className="tabs">
-            <button className={tab === 'form' ? 'on' : ''} onClick={() => setTab('form')}>EOD</button>
-            <button className={tab === 'map' ? 'on' : ''} onClick={() => setTab('map')}>Data we need</button>
-          </div>
+          <Seg options={['EOD', 'Data we need']} value={tab === 'form' ? 'EOD' : 'Data we need'} onChange={(x) => x && setTab(x === 'EOD' ? 'form' : 'map')} className="tabs" />
           <div className="spacer" />
           <div className="csm-pick">
             <select value={csm} onChange={(e) => setCsm(e.target.value)} aria-label="CSM">
@@ -139,54 +206,71 @@ export default function Page() {
         </div>
       </div>
 
-      {tab === 'map' ? (
-        <DataMap />
-      ) : (
-        <div className="wrap">
-          <p className="note">
-            Demo with fictional members. Everything below is prefilled from today’s calls and texts. Check each card and fix anything that’s wrong.
-            <span className="dot-ai" style={{ marginLeft: 6 }} /> = filled in for you.
-          </p>
-          <div className="add-row">
-            <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
-            <span className="meta">Talked to someone who isn’t listed? Add them.</span>
-          </div>
+      <AnimatePresence mode="wait" initial={false}>
+        {tab === 'map' ? (
+          <motion.div key="map" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.22 }}>
+            <DataMap />
+          </motion.div>
+        ) : (
+          <motion.div key={'form-' + csm} className="wrap" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.22 }}>
+            <div className="intro">
+              <p className="note">
+                Prefilled from today’s calls and texts. Check each card and fix anything that’s wrong.
+                <span className="dot-ai" style={{ marginLeft: 6 }} /> = filled in for you.
+              </p>
+              <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
+            </div>
 
-          {SECTIONS.map((sec) => {
-            const list = touches.filter((t) => t.section === sec.id);
-            if (!list.length) return null;
-            return (
-              <div className="section" key={sec.id}>
-                <div className="section-h">
-                  <h2>{sec.title}</h2>
-                  <span className="count">{list.length}</span>
-                </div>
-                {list.map((t) => (
-                  <Card
-                    key={t.id}
-                    t={t}
-                    sec={sec}
-                    c={cards[t.id]}
-                    setValue={(k, v) => setValue(t.id, k, v)}
-                    patch={(p) => update(t.id, (c) => ({ ...c, ...p }))}
-                    setFlag={(k, p) => update(t.id, (c) => ({ ...c, flags: { ...c.flags, [k]: { ...(c.flags[k] || {}), ...p } } }))}
-                    onSeen={() => update(t.id, (c) => (c.seenAt ? c : { ...c, seenAt: Date.now() }))}
-                    onRemove={t.manual ? () => removeTouch(t.id) : null}
-                  />
-                ))}
-              </div>
-            );
-          })}
-          {touches.length === 0 && <div className="empty">No calls or texts synced for {csm} today. (Demo data is only loaded for Tristan and Jack.)</div>}
+            {sections.map(({ sec, list, done, complete }) => (
+              <section key={sec.id} id={'sec-' + sec.id} className={`sec ${openSec === sec.id ? 'is-open' : ''} ${complete ? 'is-done' : ''}`}>
+                <button className="sec-h" onClick={() => setOpenSec(openSec === sec.id ? null : sec.id)} aria-expanded={openSec === sec.id}>
+                  <motion.span className="chev" animate={{ rotate: openSec === sec.id ? 90 : 0 }} transition={SPRING}>›</motion.span>
+                  <span className="sec-title">{sec.title}</span>
+                  <span className="sec-count">{list.length}</span>
+                  <span className="spacer" />
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    {complete ? (
+                      <motion.span key="done" className="sec-done" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }} transition={SPRING}>
+                        ✓ Done
+                      </motion.span>
+                    ) : (
+                      <motion.span key="prog" className="sec-prog" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                        {done}/{list.length} checked
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                </button>
+                <Drawer open={openSec === sec.id}>
+                  <div className="sec-b">
+                    {list.map((t) => (
+                      <Card
+                        key={t.id}
+                        t={t}
+                        sec={sec}
+                        c={cards[t.id]}
+                        setValue={(k, v) => setValue(t.id, k, v)}
+                        patch={(p) => update(t.id, (c) => ({ ...c, ...p }))}
+                        setFlag={(k, p) => update(t.id, (c) => ({ ...c, flags: { ...c.flags, [k]: { ...(c.flags[k] || {}), ...p } } }))}
+                        onSeen={() => update(t.id, (c) => (c.seenAt ? c : { ...c, seenAt: Date.now() }))}
+                        onConfirm={() => confirmCard(t)}
+                        onRemove={t.manual ? () => removeTouch(t.id) : null}
+                      />
+                    ))}
+                  </div>
+                </Drawer>
+              </section>
+            ))}
+            {touches.length === 0 && <div className="empty">No calls or texts synced for {csm} today. (Demo data is only loaded for Tristan and Jack.)</div>}
 
-          <Untouched list={needsAttention(ROSTER, csm, new Set(touches.map((t) => t.memberId || t.id)))} onLog={(id) => setAdding({ preselect: id })} />
+            <Untouched list={attention} onLog={(id) => setAdding({ preselect: id })} />
 
-          <div className="add-row bottom">
-            <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
-            <span className="meta">Talked to someone who isn’t listed? Add them.</span>
-          </div>
-        </div>
-      )}
+            <div className="add-row bottom">
+              <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
+              <span className="meta">Talked to someone who isn’t listed? Add them.</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {tab === 'form' && (
         <div className="bar">
@@ -196,48 +280,44 @@ export default function Page() {
                 {confirmedCount} of {touches.length} checked
               </small>
               <div className="track">
-                <div className="fill" style={{ width: touches.length ? `${(confirmedCount / touches.length) * 100}%` : '0%' }} />
+                <motion.div className="fill" initial={false} animate={{ width: `${pct}%` }} transition={SPRING} />
               </div>
             </div>
-            {submittedAt && <span className="meta">✓ Submitted</span>}
-            <button className="btn primary" disabled={touches.length === 0} onClick={() => setReview(true)}>
+            <AnimatePresence>{submittedAt && <motion.span className="meta" initial={{ opacity: 0, x: 6 }} animate={{ opacity: 1, x: 0 }}>✓ Submitted</motion.span>}</AnimatePresence>
+            <motion.button whileTap={{ scale: 0.97 }} className="btn primary" disabled={touches.length === 0} onClick={() => setReview(true)}>
               {confirmedCount < touches.length ? 'Preview' : 'Review & submit'}
-            </button>
+            </motion.button>
           </div>
         </div>
       )}
 
-      {adding && (
-        <AddClient
-          csm={csm}
-          preselect={adding.preselect}
-          already={new Set(touches.map((t) => t.memberId || t.id))}
-          onAdd={addTouch}
-          onClose={() => setAdding(null)}
-        />
-      )}
-
-      {review && (
-        <Review
-          allWrites={allWrites}
-          cards={cards}
-          openedAt={state.openedAt}
-          canSubmit={confirmedCount === touches.length && touches.length > 0}
-          onClose={() => setReview(false)}
-          onSubmit={() => {
-            setSubmittedAt(Date.now());
-            setReview(false);
-          }}
-          csm={csm}
-        />
-      )}
-    </>
+      <AnimatePresence>
+        {adding && (
+          <AddClient key="add" csm={csm} preselect={adding.preselect} already={new Set(touches.map((t) => t.memberId || t.id))} onAdd={addTouch} onClose={() => setAdding(null)} />
+        )}
+        {review && (
+          <Review
+            key="review"
+            allWrites={allWrites}
+            cards={cards}
+            openedAt={state.openedAt}
+            canSubmit={confirmedCount === touches.length && touches.length > 0}
+            onClose={() => setReview(false)}
+            onSubmit={() => {
+              setSubmittedAt(Date.now());
+              setReview(false);
+            }}
+            csm={csm}
+          />
+        )}
+      </AnimatePresence>
+    </MotionConfig>
   );
 }
 
 /* ---------- Card ---------- */
 
-function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onRemove }) {
+function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onConfirm, onRemove }) {
   const ref = useRef(null);
   useEffect(() => {
     if (!ref.current || c?.seenAt) return;
@@ -254,12 +334,13 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onRemove }) {
   const compliance = complianceAlerts(sec, t, v);
   const activeFlags = ADDONS.filter((f) => c.flags[f.key]?.on);
   const canAdd = (a) => !c.flags[a.key]?.on && (!a.onlyAfterFirstSale || t.current.journey?.firstSale);
+  const h = healthOf(v.health);
 
-  if (!c.open) {
-    const h = healthOf(v.health);
-    return (
-      <div className="card done" ref={ref}>
-        <div className="collapsed" onClick={() => patch({ open: true })}>
+  return (
+    <motion.div layout="position" className={`card ${c.confirmed ? 'done' : ''}`} ref={ref} id={t.id} transition={SPRING}>
+      {/* Collapsed summary (after "Looks right") */}
+      <Drawer open={!c.open}>
+        <button className="collapsed" onClick={() => patch({ open: true })}>
           <span className="ok">✓</span>
           <b>{t.name}</b>
           <span className="sum">{v.outcome || '—'}</span>
@@ -270,112 +351,141 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onRemove }) {
           <span className="sum muted">→ {v.nextStep || '—'} {v.nextDue ? fmtDate(v.nextDue) : ''}</span>
           <span className="spacer" />
           {h && <span className="hdot" style={{ background: h.color }} title={h.label} />}
-        </div>
-      </div>
-    );
-  }
+        </button>
+      </Drawer>
 
-  return (
-    <div className="card" ref={ref} id={t.id}>
-      {/* Header: identity left, health right — same place on every card */}
-      <div className="card-h">
-        <div className="who">
-          <div className="name">
-            {t.name} <span className="biz">{t.business}</span>
-            {t.manual && <span className="pill manual">added by you</span>}
+      {/* Full card */}
+      <Drawer open={c.open}>
+        <div className="card-h">
+          <div className="who">
+            <div className="name">
+              {t.name} <span className="biz">{t.business}</span>
+              {t.manual && <span className="pill manual">added by you</span>}
+            </div>
+            <div className="summary-line">
+              {t.sources.map((s, i) => (
+                <span key={i} title={`${s.label} · ${s.detail}`}>{SRC_ICON[s.kind]} </span>
+              ))}
+              {t.summary}{' '}
+              <button className="link" onClick={() => patch({ showDetails: !c.showDetails })}>
+                {c.showDetails ? 'hide' : 'details'}
+              </button>
+            </div>
           </div>
-          <div className="summary-line">
-            {t.sources.map((s, i) => (
-              <span key={i} title={`${s.label} · ${s.detail}`}>{SRC_ICON[s.kind]} </span>
-            ))}
-            {t.summary}{' '}
-            <button className="link" onClick={() => patch({ showDetails: !c.showDetails })}>
-              {c.showDetails ? 'hide' : 'details'}
-            </button>
-          </div>
-        </div>
-        <HealthPicker value={v.health} ai={ai('health')} was={t.current.health} onChange={(n) => setValue('health', n)} />
-      </div>
-
-      {c.showDetails && <Details t={t} sec={sec} c={c} />}
-
-      <div className="card-b">
-        {compliance.map((a, i) => (
-          <div key={i} className="alert bad">{a}</div>
-        ))}
-
-        <div className="core">
-          <Labeled label="Outcome" ai={ai('outcome')} missing={!v.outcome}>
-            {sec.outcomes ? (
-              <select value={v.outcome || ''} onChange={(e) => setValue('outcome', e.target.value)}>
-                <option value="">Select…</option>
-                {sec.outcomes.map((o) => (
-                  <option key={o}>{o}</option>
-                ))}
-              </select>
-            ) : (
-              <input value={v.outcome || ''} onChange={(e) => setValue('outcome', e.target.value)} placeholder="What happened?" />
-            )}
-          </Labeled>
-          <Labeled label="Next step" ai={ai('nextStep')}>
-            <input value={v.nextStep || ''} onChange={(e) => setValue('nextStep', e.target.value)} />
-          </Labeled>
-          <Labeled label="Due" ai={ai('nextDue')}>
-            <input type="date" value={v.nextDue || ''} onChange={(e) => setValue('nextDue', e.target.value)} />
-          </Labeled>
+          <HealthPicker value={v.health} ai={ai('health')} was={t.current.health} onChange={(n) => setValue('health', n)} />
         </div>
 
-        {questions.length > 0 && (
-          <div className="qs">
-            {questions.map((q) => (
-              <Question key={q.key} q={q} v={v} ai={ai} setValue={setValue} />
-            ))}
-          </div>
-        )}
-        {!callHeld(sec, v) && v.outcome && <div className="muted small">Call didn’t happen, so no call questions.</div>}
+        <Drawer open={c.showDetails}>
+          <Details t={t} sec={sec} c={c} />
+        </Drawer>
 
-        {activeFlags.length > 0 && (
-          <div className="flag-rows">
-            {activeFlags.map((a) => (
-              <AddonRow key={a.key} a={a} val={c.flags[a.key]} set={(p) => setFlag(a.key, p)} />
+        <div className="card-b">
+          <AnimatePresence initial={false}>
+            {compliance.map((a) => (
+              <motion.div key={a} className="alert bad" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={DRAWER}>
+                {a}
+              </motion.div>
             ))}
-          </div>
-        )}
+          </AnimatePresence>
 
-        {c.showAdd && (
-          <div className="add-menu">
-            {ADDON_GROUPS.map((g) => {
-              const items = ADDONS.filter((a) => a.group === g && canAdd(a));
-              if (!items.length) return null;
-              return (
-                <div className="add-group" key={g}>
-                  <span className="add-g">{g}</span>
-                  {items.map((a) => (
-                    <button key={a.key} className="chip" onClick={() => { setFlag(a.key, { on: true, prov: 'edited' }); patch({ showAdd: false }); }}>
-                      {a.label}
-                    </button>
+          <div className="core">
+            <Labeled label="Outcome" ai={ai('outcome')} missing={!v.outcome}>
+              {sec.outcomes ? (
+                <select value={v.outcome || ''} onChange={(e) => setValue('outcome', e.target.value)}>
+                  <option value="">Select…</option>
+                  {sec.outcomes.map((o) => (
+                    <option key={o}>{o}</option>
                   ))}
-                </div>
-              );
-            })}
+                </select>
+              ) : (
+                <input value={v.outcome || ''} onChange={(e) => setValue('outcome', e.target.value)} placeholder="What happened?" />
+              )}
+            </Labeled>
+            <Labeled label="Next step" ai={ai('nextStep')}>
+              <input value={v.nextStep || ''} onChange={(e) => setValue('nextStep', e.target.value)} />
+            </Labeled>
+            <Labeled label="Due" ai={ai('nextDue')}>
+              <input type="date" value={v.nextDue || ''} onChange={(e) => setValue('nextDue', e.target.value)} />
+            </Labeled>
           </div>
-        )}
-      </div>
 
-      <div className="card-f">
-        <div className="adders">
-          <button className="link" onClick={() => patch({ showAdd: !c.showAdd })}>{c.showAdd ? '× Close' : '+ Add'}</button>
-          <span className="meta add-hint">issue, marketing, leads, reorder, sale, refund…</span>
-          {onRemove && <button className="link danger" onClick={onRemove}>Remove</button>}
+          <Drawer open={questions.length > 0}>
+            <div className="qs">
+              <AnimatePresence initial={false}>
+                {questions.map((q) => (
+                  <motion.div key={q.key} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={DRAWER} style={{ overflow: 'hidden' }}>
+                    <Question q={q} v={v} ai={ai} setValue={setValue} />
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          </Drawer>
+          <Drawer open={!callHeld(sec, v) && !!v.outcome}>
+            <div className="muted small" style={{ paddingTop: 8 }}>Call didn’t happen, so no call questions.</div>
+          </Drawer>
+
+          <div className="flag-rows">
+            <AnimatePresence initial={false}>
+              {activeFlags.map((a) => (
+                <motion.div key={a.key} layout initial={{ opacity: 0, height: 0, y: -4 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={{ opacity: 0, height: 0 }} transition={DRAWER} style={{ overflow: 'hidden' }}>
+                  <AddonRow a={a} val={c.flags[a.key]} set={(p) => setFlag(a.key, p)} />
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+
+          <Drawer open={c.showAdd}>
+            <div className="add-menu">
+              {ADDON_GROUPS.map((g) => {
+                const items = ADDONS.filter((a) => a.group === g && canAdd(a));
+                if (!items.length) return null;
+                return (
+                  <div className="add-group" key={g}>
+                    <span className="add-g">{g}</span>
+                    {items.map((a) => (
+                      <motion.button
+                        key={a.key}
+                        whileHover={{ y: -1 }}
+                        whileTap={{ scale: 0.96 }}
+                        className="chip"
+                        onClick={() => {
+                          setFlag(a.key, { on: true, prov: 'edited' });
+                          patch({ showAdd: false });
+                        }}
+                      >
+                        {a.label}
+                      </motion.button>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          </Drawer>
         </div>
-        <div className="right">
-          {missing.length > 0 && <span className="need">Needs: {missing.join(', ')}</span>}
-          <button className="btn primary" disabled={missing.length > 0} onClick={() => patch({ confirmed: true, open: false, confirmedAt: Date.now() })}>
-            Looks right ✓
-          </button>
+
+        <div className="card-f">
+          <div className="adders">
+            <button className="link" onClick={() => patch({ showAdd: !c.showAdd })}>
+              <motion.span style={{ display: 'inline-block' }} animate={{ rotate: c.showAdd ? 45 : 0 }} transition={SPRING}>+</motion.span> {c.showAdd ? 'Close' : 'Add'}
+            </button>
+            {!c.showAdd && <span className="meta add-hint">issue, marketing, leads, reorder, sale, refund…</span>}
+            {onRemove && <button className="link danger" onClick={onRemove}>Remove</button>}
+          </div>
+          <div className="right">
+            <AnimatePresence initial={false}>
+              {missing.length > 0 && (
+                <motion.span className="need" initial={{ opacity: 0, x: 6 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 6 }}>
+                  Needs: {missing.join(', ')}
+                </motion.span>
+              )}
+            </AnimatePresence>
+            <motion.button whileTap={{ scale: 0.96 }} className="btn primary" disabled={missing.length > 0} onClick={onConfirm}>
+              Looks right ✓
+            </motion.button>
+          </div>
         </div>
-      </div>
-    </div>
+      </Drawer>
+    </motion.div>
   );
 }
 
@@ -404,7 +514,7 @@ function AddonRow({ a, val, set }) {
           return (
             <label key={f.k} className="mini">
               {f.ph}
-              <input className="money" inputMode="numeric" value={v} onChange={(e) => on(e.target.value.replace(/[^0-9.]/g, ''))} />
+              <input className="money" inputMode="numeric" value={v} onChange={(e) => on(digits(e.target.value))} />
             </label>
           );
         return <input key={f.k} className="grow" placeholder={f.ph} value={v} onChange={(e) => on(e.target.value)} />;
@@ -427,63 +537,81 @@ function Labeled({ label, ai, missing, children }) {
   );
 }
 
-function Seg({ options, value, onChange }) {
+// Segmented control with a sliding selection pill.
+function Seg({ options, value, onChange, className = '' }) {
+  const id = useId();
   return (
-    <div className="seg">
+    <div className={`seg ${className}`}>
       {options.map((o) => (
-        <button key={o} className={value === o ? 'on' : ''} onClick={() => onChange(value === o ? '' : o)}>
-          {o}
+        <button key={o} className={value === o ? 'on' : ''} onClick={() => onChange(value === o && !className.includes('tabs') ? '' : o)}>
+          {value === o && <motion.span layoutId={'pill' + id} className="seg-pill" transition={SPRING} />}
+          <span className="seg-t">{o}</span>
         </button>
       ))}
     </div>
   );
 }
 
+const Reveal = ({ show, children }) => (
+  <AnimatePresence initial={false}>
+    {show && (
+      <motion.span className="reveal" initial={{ opacity: 0, x: -6, width: 0 }} animate={{ opacity: 1, x: 0, width: 'auto' }} exit={{ opacity: 0, x: -6, width: 0 }} transition={DRAWER}>
+        {children}
+      </motion.span>
+    )}
+  </AnimatePresence>
+);
+
 function Question({ q, v, ai, setValue }) {
   const val = v[q.key] ?? '';
   return (
-    <div className={`q ${q.kind === 'gap' ? 'gap' : ''} ${q.required && !val ? 'missing' : ''}`}>
+    <div className={`q ${q.required && !val ? 'missing' : ''}`}>
       <div className="q-label">
         {ai(q.key) && <span className="dot-ai" title="Filled in from the call/text. Check it." />}
         {q.q}
-        {q.kind === 'gap' && <span className="gap-tag" title={q.note}>not in Airtable</span>}
       </div>
       <div className="q-ctl">
         {q.kind === 'pitch' && (
           <>
             <Seg options={['Yes', 'No']} value={val} onChange={(x) => setValue(q.key, x)} />
-            {val === 'Yes' && (
+            <Reveal show={val === 'Yes'}>
               <select value={v[q.resultKey] || ''} onChange={(e) => setValue(q.resultKey, e.target.value)}>
                 <option value="">Result…</option>
                 {PITCH_RESULTS.map((o) => (
                   <option key={o}>{o}</option>
                 ))}
               </select>
-            )}
+            </Reveal>
+            <Reveal show={val === 'Yes' && v[q.resultKey] === 'Sold'}>
+              <label className="mini">
+                $ collected
+                <input className="money" inputMode="numeric" value={v[q.amountKey] || ''} onChange={(e) => setValue(q.amountKey, digits(e.target.value))} />
+              </label>
+            </Reveal>
           </>
         )}
         {q.kind === 'gap' && (
           <>
             <Seg options={['Yes', 'No', 'Not sure']} value={val} onChange={(x) => setValue(q.key, x)} />
-            {val === 'Yes' && <input type="date" value={v[q.dateKey] || ''} onChange={(e) => setValue(q.dateKey, e.target.value)} />}
+            <Reveal show={val === 'Yes'}>
+              <input type="date" value={v[q.dateKey] || ''} onChange={(e) => setValue(q.dateKey, e.target.value)} />
+            </Reveal>
           </>
         )}
         {q.kind === 'sale' && (
           <>
             <Seg options={['Yes', 'No']} value={val} onChange={(x) => setValue('sale', x)} />
-            {val === 'Yes' && (
-              <>
-                <input type="date" value={v.saleDate || ''} onChange={(e) => setValue('saleDate', e.target.value)} title="Sale date" />
-                <label className="mini">
-                  $ job
-                  <input className="money" inputMode="numeric" value={v.jobValue || ''} onChange={(e) => setValue('jobValue', e.target.value.replace(/[^0-9.]/g, ''))} />
-                </label>
-                <label className="mini">
-                  $ collected
-                  <input className="money" inputMode="numeric" value={v.cashCollected || ''} onChange={(e) => setValue('cashCollected', e.target.value.replace(/[^0-9.]/g, ''))} />
-                </label>
-              </>
-            )}
+            <Reveal show={val === 'Yes'}>
+              <input type="date" value={v.saleDate || ''} onChange={(e) => setValue('saleDate', e.target.value)} title="Sale date" />
+              <label className="mini">
+                $ job
+                <input className="money" inputMode="numeric" value={v.jobValue || ''} onChange={(e) => setValue('jobValue', digits(e.target.value))} />
+              </label>
+              <label className="mini">
+                $ collected
+                <input className="money" inputMode="numeric" value={v.cashCollected || ''} onChange={(e) => setValue('cashCollected', digits(e.target.value))} />
+              </label>
+            </Reveal>
           </>
         )}
         {q.kind === 'date' && <input type="date" value={val} onChange={(e) => setValue(q.key, e.target.value)} />}
@@ -495,24 +623,24 @@ function Question({ q, v, ai, setValue }) {
 }
 
 function HealthPicker({ value, ai, was, onChange }) {
+  const id = useId();
   const cur = healthOf(value);
   return (
     <div className="hp">
       <div className="hp-label">
         {ai && <span className="dot-ai" />}
-        <span style={{ color: cur?.color }}>{cur ? cur.label : 'Health?'}</span>
+        <AnimatePresence mode="popLayout" initial={false}>
+          <motion.span key={cur?.label || 'none'} style={{ color: cur?.color }} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
+            {cur ? cur.label : 'Health?'}
+          </motion.span>
+        </AnimatePresence>
         {was && Number(was) !== Number(value) && <span className="muted"> (was {healthOf(was)?.label})</span>}
       </div>
       <div className="hp-row">
         {HEALTH.map((h) => (
-          <button
-            key={h.v}
-            title={`${h.v} · ${h.label}`}
-            onClick={() => onChange(h.v)}
-            className={Number(value) === h.v ? 'on' : ''}
-            style={{ '--c': h.color }}
-          >
-            {h.v}
+          <button key={h.v} title={`${h.v} · ${h.label}`} onClick={() => onChange(h.v)} className={Number(value) === h.v ? 'on' : ''} style={{ '--c': h.color }}>
+            {Number(value) === h.v && <motion.span layoutId={'hp' + id} className="hp-pill" style={{ background: h.color }} transition={SPRING} />}
+            <span className="hp-n">{h.v}</span>
           </button>
         ))}
       </div>
@@ -558,31 +686,34 @@ function Untouched({ list, onLog }) {
   const [open, setOpen] = useState(true);
   if (!list?.length) return null;
   return (
-    <div className="section">
-      <button className="untouched-toggle" onClick={() => setOpen(!open)}>
-        {open ? '▾' : '▸'} Needs attention: {list.length} assigned member{list.length > 1 ? 's' : ''} not contacted today
+    <section className={`sec attention ${open ? 'is-open' : ''}`}>
+      <button className="sec-h" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <motion.span className="chev" animate={{ rotate: open ? 90 : 0 }} transition={SPRING}>›</motion.span>
+        <span className="sec-title">Needs attention</span>
+        <span className="sec-count">{list.length}</span>
+        <span className="spacer" />
+        <span className="sec-prog">Not contacted today · {TOUCH_RULE.perWeek}/week, max {TOUCH_RULE.maxGapDays} days apart</span>
       </button>
-      <div className="meta" style={{ marginTop: 2 }}>Rule: {TOUCH_RULE.perWeek} touches a week, no more than {TOUCH_RULE.maxGapDays} days between touches.</div>
-      {open && (
-        <div className="card untouched">
-          {list.map((u) => {
-            const h = healthOf(u.current.health);
+      <Drawer open={open}>
+        <div className="untouched">
+          {list.map((u, i) => {
+            const hh = healthOf(u.current.health);
             const [lvl, cls] = LEVEL[u.status.level];
             return (
-              <div className="row" key={u.id}>
+              <motion.div className="row" key={u.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ ...DRAWER, delay: i * 0.04 }}>
                 <span className={`lvl ${cls}`}>{lvl}</span>
-                <span className="hdot" style={{ background: h?.color }} title={h?.label} />
+                <span className="hdot" style={{ background: hh?.color }} title={hh?.label} />
                 <b>{u.name}</b>
                 <span className="meta">{u.status.week}/{TOUCH_RULE.perWeek} this week</span>
                 <span className="reasons">{u.status.reasons.join(' · ')}</span>
                 <span className="spacer" />
                 <button className="link" onClick={() => onLog(u.id)}>Log a touch</button>
-              </div>
+              </motion.div>
             );
           })}
         </div>
-      )}
-    </div>
+      </Drawer>
+    </section>
   );
 }
 
@@ -606,8 +737,7 @@ function AddClient({ csm, preselect, already, onAdd, onClose }) {
     .filter((m) => !q || `${m.name} ${m.business}`.toLowerCase().includes(q.toLowerCase()));
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose} narrow>
         <h3>Add a client</h3>
         <div className="meta">For a conversation that didn’t sync from GHL or Fathom.</div>
 
@@ -648,8 +778,7 @@ function AddClient({ csm, preselect, already, onAdd, onClose }) {
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" disabled={!picked || !type} onClick={() => onAdd(picked, type)}>Add card</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -668,8 +797,7 @@ function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm 
   const edits = timing.reduce((n, x) => n + x.edits, 0);
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose}>
         <h3>{canSubmit ? 'Submit your EOD' : 'Preview'}</h3>
         <div className="meta">
           {total} Airtable updates across {allWrites.length} members, plus 1 EOD log row for {csm} ({fmtDate(TODAY)}).
@@ -732,8 +860,7 @@ function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm 
           <button className="btn" onClick={onClose}>Back</button>
           <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>Submit EOD</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 

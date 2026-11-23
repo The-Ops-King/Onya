@@ -24,7 +24,7 @@ export function buildQuestions(sec, touch, values) {
     } else if (a.type === 'select') {
       qs.push({ key: a.key, kind: 'select', q: a.q, options: a.options });
     } else {
-      qs.push({ key: a.key, kind: 'pitch', q: a.q, resultKey: a.resultKey, mandatory: a.mandatory, required: true });
+      qs.push({ key: a.key, kind: 'pitch', q: a.q, resultKey: a.resultKey, amountKey: a.key + 'Amount', upsellType: a.key === 'aeo' ? 'SEO + AEO' : 'Financing', mandatory: a.mandatory, required: true });
     }
   }
   const callType = sec.id === 'comms' ? touch.phase : sec.id;
@@ -83,6 +83,8 @@ export function computeWrites(sec, touch, values, flags, csm = 'CSM') {
     const v = values[q.key];
     if (q.key === 'ghosting' && v === 'Yes' && cur.lifecycle !== 'Ghosting') up('Lifecycle Stage', 'Ghosting', { from: cur.lifecycle, status: 'exists' });
     if (q.key === 'ghosting' && v === 'No' && cur.lifecycle === 'Ghosting') up('Lifecycle Stage', 'Active', { from: 'Ghosting', status: 'exists' });
+    if (q.kind === 'pitch' && v === 'Yes' && values[q.resultKey] === 'Sold')
+      w.push({ kind: 'create', table: 'Upsell (portal form)', field: 'New upsell', to: `${q.upsellType} · ${money(values[q.amountKey])}`, status: 'exists' });
     if (q.kind === 'pitch' && v) comment.push(`${q.q.replace('?', '')}: ${v}${v === 'Yes' && values[q.resultKey] ? ` (${values[q.resultKey]})` : ''}`);
     if (q.kind === 'date' && v) up('Marketing activated at', v, { status: 'exists' });
     if (q.kind === 'gap' && v === 'Yes') up(STEPS[q.step].field, values[q.dateKey] || '', { status: 'exists', viktor: STEPS[q.step].viktor, note: 'Was empty, filled from EOD' });

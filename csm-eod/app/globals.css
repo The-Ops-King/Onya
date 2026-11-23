@@ -279,3 +279,85 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .st.comment { background: var(--panel-2); color: var(--ink-2); border: 1px solid var(--line); }
 .st.eod { background: var(--edit-bg); color: var(--edit); }
 .st.supabase { background: var(--at-bg); color: var(--at); }
+
+/* ================= premium pass ================= */
+:root { --shadow-1: 0 1px 2px rgba(16,24,40,.05); --shadow-2: 0 1px 3px rgba(16,24,40,.06), 0 8px 24px -12px rgba(16,24,40,.12); --sec-head: #fbfbfd; }
+@media (prefers-color-scheme: dark) { :root { --shadow-1: 0 1px 2px rgba(0,0,0,.4); --shadow-2: 0 1px 3px rgba(0,0,0,.5), 0 10px 30px -12px rgba(0,0,0,.6); --sec-head: #1a1e25; } }
+
+body { -webkit-font-smoothing: antialiased; }
+button { transition: background-color .18s, color .18s, border-color .18s, box-shadow .18s, opacity .18s; }
+input, select, textarea { transition: border-color .15s, box-shadow .15s, background-color .15s; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.btn { box-shadow: var(--shadow-1); }
+.btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ink) 20%, var(--line)); }
+.btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
+
+.intro { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; }
+.intro .note { margin: 0; flex: 1; min-width: 240px; }
+
+/* Sections = distinct panels */
+.sec { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 14px; box-shadow: var(--shadow-1); overflow: hidden; transition: box-shadow .25s, border-color .25s; }
+.sec.is-open { box-shadow: var(--shadow-2); }
+.sec.is-done:not(.is-open) { border-color: color-mix(in srgb, var(--ok) 30%, var(--line)); }
+.sec-h { width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 16px; border: 0; background: var(--sec-head); cursor: pointer; text-align: left; }
+.sec.is-open .sec-h { border-bottom: 1px solid var(--line); }
+.sec-h:hover { background: var(--panel-2); }
+.chev { display: inline-block; font-size: 20px; line-height: 1; color: var(--ink-3); width: 12px; }
+.sec-title { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
+.sec-count { font-size: 12px; font-weight: 600; color: var(--ink-2); background: var(--panel-2); border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; line-height: 20px; }
+.sec-prog { font-size: 12px; color: var(--ink-3); }
+.sec-done { font-size: 12px; font-weight: 700; color: var(--ok); background: var(--ok-bg); border-radius: 99px; padding: 2px 9px; }
+.sec-b { padding: 12px; background: var(--bg); display: flex; flex-direction: column; gap: 10px; }
+.sec-b .card { margin: 0; }
+.sec.attention .sec-h { background: color-mix(in srgb, var(--warn-bg) 55%, var(--sec-head)); }
+
+/* Cards inside panels */
+.card { border-radius: 12px; box-shadow: var(--shadow-1); }
+.card.done { box-shadow: none; }
+.collapsed { width: 100%; border: 0; background: transparent; text-align: left; font: inherit; color: inherit; }
+.collapsed:hover { background: var(--panel-2); }
+
+/* Segmented control with sliding pill */
+.seg { position: relative; display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow: visible; }
+.seg button { position: relative; border: 0 !important; background: transparent !important; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--ink-2); white-space: nowrap; }
+.seg button.on { color: var(--accent-ink); }
+.seg-pill { position: absolute; inset: 0; border-radius: 6px; background: var(--accent); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+.seg-t { position: relative; z-index: 1; }
+.seg.tabs { background: var(--panel-2); }
+.seg.tabs button.on { color: var(--ink); }
+.seg.tabs .seg-pill { background: var(--panel); box-shadow: 0 1px 2px rgba(0,0,0,.1), 0 0 0 1px var(--line); }
+
+/* Health picker with sliding fill */
+.hp-row { gap: 4px; }
+.hp-row button { position: relative; overflow: hidden; }
+.hp-row button.on { background: var(--panel); box-shadow: none; border-color: transparent; }
+.hp-pill { position: absolute; inset: 0; border-radius: 5px; }
+.hp-n { position: relative; z-index: 1; }
+.hp-row button.on .hp-n { color: #fff; font-weight: 700; }
+.hp-label { min-height: 18px; }
+
+/* Questions: no gap tint, quieter rows */
+.qs { margin-top: 12px; }
+.qs > div:last-child .q { border-bottom: 0; }
+.q.gap { background: transparent; }
+.reveal { display: inline-flex; gap: 6px; align-items: center; overflow: hidden; white-space: nowrap; }
+
+/* Add-ons */
+.flag-rows { margin-top: 0; gap: 0; }
+.flag-rows > div { padding-top: 8px; }
+.flag-row { border-radius: 10px; }
+.add-menu { border-radius: 10px; }
+.chip { transition: background-color .15s, border-color .15s; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Bottom bar + progress */
+.bar { backdrop-filter: saturate(1.4) blur(10px); background: color-mix(in srgb, var(--panel) 86%, transparent); }
+.progress .fill { width: 0; }
+
+/* Modals */
+.modal { box-shadow: 0 24px 60px -20px rgba(0,0,0,.35); }
+.modal-bg { backdrop-filter: blur(2px); }
+
+.untouched .row { background: var(--panel); }
+
+.mini input { color: var(--ink); font-size: 13px; }

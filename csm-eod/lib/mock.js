@@ -52,9 +52,8 @@ export const MEMBERS = {
           { t: '02:15', who: 'Gina', text: 'The oil showed up Wednesday, it’s all in the garage.' },
           { t: '35:02', who: 'Gina', text: 'Yeah let’s do the Affirm, I’ll pay that now.' },
         ],
-        values: { outcome: 'Launched', affirm: 'Yes', affirmResult: 'Sold', goLive: '2026-11-30', nextStep: 'Go-live check-in', nextDue: '2026-11-30', health: 1, gap_oilDelivered: 'Yes', gapdate_oilDelivered: '2026-11-18' },
-        prov: { outcome: 'ai', affirm: 'ai', affirmResult: 'ai', goLive: 'ai', nextStep: 'ai', nextDue: 'ai', health: 'ai', gap_oilDelivered: 'ai', gapdate_oilDelivered: 'ai' },
-        flags: { upsell: { on: true, type: 'Financing', amount: '2000', prov: 'ai' } },
+        values: { outcome: 'Launched', affirm: 'Yes', affirmResult: 'Sold', affirmAmount: '2000', goLive: '2026-11-30', nextStep: 'Go-live check-in', nextDue: '2026-11-30', health: 1, gap_oilDelivered: 'Yes', gapdate_oilDelivered: '2026-11-18' },
+        prov: { outcome: 'ai', affirm: 'ai', affirmResult: 'ai', affirmAmount: 'ai', goLive: 'ai', nextStep: 'ai', nextDue: 'ai', health: 'ai', gap_oilDelivered: 'ai', gapdate_oilDelivered: 'ai' },
       }),
       m({
         id: 't5', section: 'launch', name: 'Pete Lindqvist', business: 'Lindqvist Restoration', pkg: 'Scale',
