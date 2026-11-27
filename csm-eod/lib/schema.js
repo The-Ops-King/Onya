@@ -68,12 +68,12 @@ export const E = {
   other: 'fldR5xj0sbGRWI4QH',
 };
 
-// EOD Check-ins fields added for this app (by name until they exist).
+// EOD Check-ins fields added for this app (2026-11-27).
 export const E_NEW = {
-  membersTouched: 'Members touched',
-  writeLog: 'Write log',
-  timeOnForm: 'Time on form',
-  quickConfirms: 'Quick confirms',
-  aiValuesChanged: 'AI values changed',
-  addedByHand: 'Added by hand',
+  membersTouched: 'fldz4zv4hj3uuuNVY',
+  writeLog: 'fldrJ2VW5eogh5WuD',
+  timeOnForm: 'fldTqa0nqalCP49dQ',
+  quickConfirms: 'flds1XH43QuqnJ7b2',
+  aiValuesChanged: 'flduQFRBNNu0PQYk8',
+  addedByHand: 'fldavZjgGUTwTaNrj',
 };
