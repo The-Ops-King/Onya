@@ -2,23 +2,31 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence, MotionConfig } from 'motion/react';
-import { CSMS, SECTIONS, HEALTH, DATA_MAP, OPEN_QUESTIONS, DECISIONS, TODAY, PITCH_RESULTS, STEPS, EXPECTED } from '@/lib/config';
+import { SECTIONS, HEALTH, PITCH_RESULTS, sectionById, callTypeFor, healthOf } from '@/lib/config';
 import { ADDONS, ADDON_GROUPS } from '@/lib/addons';
-import { getCsmData, ROSTER } from '@/lib/mock';
-import { buildQuestions, computeWrites, missingRequired, complianceAlerts, callHeld } from '@/lib/writes';
-import { needsAttention, TOUCH_RULE } from '@/lib/touch';
+import { buildQuestions, planCard, missingRequired, complianceAlerts, callHeld } from '@/lib/plan';
 
 const SRC_ICON = { fathom: '🎥', sms: '💬', call: '📞', calendar: '📅', manual: '✍️' };
 const QUICK_MS = 5000; // confirmed faster than this with zero edits = "quick confirm"
 const fmtDate = (d) => (d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '');
-const healthOf = (v) => HEALTH.find((h) => h.v === Number(v));
 const secs = (ms) => (ms == null ? '—' : `${Math.round(ms / 1000)}s`);
 const digits = (s) => s.replace(/[^0-9.]/g, '');
+// The CSM's own calendar day, not UTC.
+const localToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 // Motion presets
 const EASE = [0.32, 0.72, 0, 1];
 const SPRING = { type: 'spring', stiffness: 520, damping: 40, mass: 0.8 };
 const DRAWER = { duration: 0.32, ease: EASE };
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  const json = await res.json().catch(() => ({}));
+  return { status: res.status, ok: res.ok, json };
+}
 
 // Smooth open/close for any block.
 function Drawer({ open, children, className }) {
@@ -57,67 +65,91 @@ function Modal({ onClose, narrow, children }) {
   );
 }
 
-function initState(csm) {
-  const data = getCsmData(csm);
-  const cards = {};
-  for (const t of data.touches) cards[t.id] = newCard(t);
-  return { data: { ...data, touches: [...data.touches] }, cards, openedAt: Date.now() };
-}
-
 function newCard(t) {
   const flags = JSON.parse(JSON.stringify(t.flags || {}));
-  // AI-detected issue / reorder become add-ons (only shown because they were detected)
   if (t.values.issues) flags.issue = { on: true, text: t.values.issues, prov: t.prov.issues };
-  if (t.values.reorder && t.values.reorder !== 'Not discussed') flags.reorder = { on: true, status: t.values.reorder, prov: t.prov.reorder };
-  return {
-    values: { ...t.values },
-    prov: { ...t.prov },
-    flags,
-    confirmed: false,
-    open: true,
-    showAdd: false,
-    showDetails: false,
-    // behind-the-scenes timing
-    seenAt: null,
-    confirmedAt: null,
-    edits: 0,
-  };
+  return { values: { ...t.values }, prov: { ...t.prov }, flags, confirmed: false, open: true, showAdd: false, showDetails: false, seenAt: null, confirmedAt: null, edits: 0 };
 }
 
-// A touch the CSM adds by hand (not found in GHL/Fathom).
+// A conversation the CSM adds by hand (not found in GHL / Fathom).
 function manualTouch(member, section, csm) {
-  const j = member.current.journey || {};
-  const phase = j.firstLead ? 'checkin' : j.oilDelivered ? 'launch' : j.onboarded ? 'prelaunch' : 'onboarding';
   return {
     id: `m-${member.id}-${Date.now()}`,
     manual: true,
     memberId: member.id,
+    member,
     section,
-    phase,
     name: member.name,
     business: member.business,
-    pkg: member.pkg,
-    current: member.current,
     sources: [{ kind: 'manual', label: 'Added by ' + csm, detail: 'not found in GHL / Fathom' }],
     summary: 'Added by you. Nothing was synced for this conversation, so fill it in.',
     evidence: [],
-    alerts: [],
     flags: {},
-    values: { health: member.current.health },
+    values: { health: member.health ?? '' },
     prov: { health: 'airtable' },
   };
 }
 
+function Login({ onDone }) {
+  const [code, setCode] = useState('');
+  const [err, setErr] = useState('');
+  const go = async (e) => {
+    e.preventDefault();
+    const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ passcode: code }) });
+    if (r.ok) onDone();
+    else setErr(r.json.error || 'Wrong passcode');
+  };
+  return (
+    <form className="login" onSubmit={go}>
+      <div className="brand">Onya <span>· End of Day</span></div>
+      <input type="password" autoFocus placeholder="Passcode" value={code} onChange={(e) => setCode(e.target.value)} />
+      {err && <div className="need">{err}</div>}
+      <button className="btn primary" disabled={!code}>Open</button>
+    </form>
+  );
+}
+
 export default function Page() {
-  const [tab, setTab] = useState('form');
-  const [csm, setCsm] = useState('Tristan');
-  const [state, setState] = useState(() => initState('Tristan'));
+  const [auth, setAuth] = useState('checking'); // checking | needed | ok
+  const [csms, setCsms] = useState([]);
+  const [csm, setCsm] = useState('');
+  const [roster, setRoster] = useState({ loading: false, members: [], error: '' });
+  const [touches, setTouches] = useState([]);
+  const [cards, setCards] = useState({});
+  const [openedAt, setOpenedAt] = useState(Date.now());
+  const [today] = useState(localToday);
   const [review, setReview] = useState(false);
-  const [submittedAt, setSubmittedAt] = useState(null);
-  const [adding, setAdding] = useState(null); // null | { preselect?: memberId }
+  const [result, setResult] = useState(null); // server response after submit
+  const [adding, setAdding] = useState(null);
   const [openSec, setOpenSec] = useState(null);
-  const { data, cards } = state;
-  const touches = data.touches;
+
+  // Auth + CSM list
+  const loadCsms = async () => {
+    const r = await api('/api/roster');
+    if (r.status === 401) return setAuth('needed');
+    if (!r.ok) return setAuth('error:' + (r.json.error || r.status));
+    setAuth('ok');
+    setCsms(r.json.csms);
+    try {
+      const saved = localStorage.getItem('eod-csm');
+      if (saved && r.json.csms.includes(saved)) setCsm(saved);
+    } catch {}
+  };
+  useEffect(() => { loadCsms(); }, []);
+
+  // CSM switch: load their members live from Airtable, reset the form.
+  useEffect(() => {
+    if (!csm) return;
+    try { localStorage.setItem('eod-csm', csm); } catch {}
+    setTouches([]);
+    setCards({});
+    setResult(null);
+    setOpenedAt(Date.now());
+    setRoster({ loading: true, members: [], error: '' });
+    api('/api/roster?csm=' + encodeURIComponent(csm)).then((r) =>
+      setRoster({ loading: false, members: r.json.members || [], error: r.ok ? '' : r.json.error || 'Could not load members' })
+    );
+  }, [csm]);
 
   const sections = SECTIONS.map((sec) => {
     const list = touches.filter((t) => t.section === sec.id);
@@ -126,17 +158,7 @@ export default function Page() {
   }).filter((s) => s.list.length);
 
   const firstIncomplete = (exceptId) => sections.find((s) => !s.complete && s.sec.id !== exceptId)?.sec.id ?? null;
-
-  // On load / CSM switch: open the first section with unchecked cards.
-  useEffect(() => {
-    const s = initState(csm);
-    setState(s);
-    setSubmittedAt(null);
-    const first = SECTIONS.find((sec) => s.data.touches.some((t) => t.section === sec.id));
-    setOpenSec(first?.id ?? null);
-  }, [csm]);
-
-  const update = (id, fn) => setState((s) => ({ ...s, cards: { ...s.cards, [id]: fn(s.cards[id]) } }));
+  const update = (id, fn) => setCards((cs) => ({ ...cs, [id]: fn(cs[id]) }));
 
   const setValue = (id, key, val) =>
     update(id, (c) => {
@@ -146,7 +168,6 @@ export default function Page() {
 
   const confirmCard = (t) => {
     update(t.id, (c) => ({ ...c, confirmed: true, open: false, showAdd: false, showDetails: false, confirmedAt: Date.now() }));
-    // If that finished the section, glide to the next unfinished one.
     const s = sections.find((x) => x.sec.id === t.section);
     if (s && s.done + 1 === s.list.length) {
       const next = firstIncomplete(t.section);
@@ -159,32 +180,64 @@ export default function Page() {
 
   const addTouch = (member, section) => {
     const t = manualTouch(member, section, csm);
-    setState((s) => ({ ...s, data: { ...s.data, touches: [...s.data.touches, t] }, cards: { ...s.cards, [t.id]: newCard(t) } }));
+    setTouches((ts) => [...ts, t]);
+    setCards((cs) => ({ ...cs, [t.id]: newCard(t) }));
     setAdding(null);
     setOpenSec(section);
     setTimeout(() => document.getElementById(t.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 420);
   };
-  const removeTouch = (id) =>
-    setState((s) => {
-      const cards = { ...s.cards };
-      delete cards[id];
-      return { ...s, data: { ...s.data, touches: s.data.touches.filter((t) => t.id !== id) }, cards };
+  const removeTouch = (id) => {
+    setTouches((ts) => ts.filter((t) => t.id !== id));
+    setCards((cs) => {
+      const n = { ...cs };
+      delete n[id];
+      return n;
     });
+  };
 
   const confirmedCount = touches.filter((t) => cards[t.id]?.confirmed).length;
   const pct = touches.length ? (confirmedCount / touches.length) * 100 : 0;
 
-  const allWrites = useMemo(
+  const plans = useMemo(
     () =>
       touches.map((t) => {
-        const sec = SECTIONS.find((s) => s.id === t.section);
         const c = cards[t.id];
-        return { t, writes: c ? computeWrites(sec, t, c.values, c.flags, csm) : [] };
+        return { t, plan: c ? planCard(sectionById(t.section), t.member, c.values, c.flags, { csm, date: today }) : null };
       }),
-    [touches, cards, csm]
+    [touches, cards, csm, today]
   );
 
-  const attention = needsAttention(ROSTER, csm, new Set(touches.map((t) => t.memberId || t.id)));
+  const stats = () => {
+    const timing = touches.map((t) => {
+      const c = cards[t.id];
+      const ms = c.confirmedAt && c.seenAt ? c.confirmedAt - c.seenAt : null;
+      return { ms, edits: c.edits, quick: c.confirmed && ms != null && ms < QUICK_MS && c.edits === 0 };
+    });
+    return {
+      timeOnFormMs: Date.now() - openedAt,
+      quickConfirms: timing.filter((x) => x.quick).length,
+      aiValuesChanged: timing.reduce((n, x) => n + x.edits, 0),
+    };
+  };
+
+  const submit = async (force = false) => {
+    const body = {
+      csm,
+      date: today,
+      force,
+      stats: stats(),
+      cards: touches.map((t) => ({ section: t.section, memberId: t.memberId, name: t.name, manual: !!t.manual, values: cards[t.id].values, flags: cards[t.id].flags })),
+    };
+    setResult({ pending: true });
+    const r = await api('/api/submit', { method: 'POST', body: JSON.stringify(body) });
+    if (r.status === 409) return setResult({ duplicate: true });
+    if (!r.ok) return setResult({ error: r.json.error || 'Submit failed (' + r.status + ')' });
+    setResult(r.json);
+  };
+
+  if (auth === 'checking') return <div className="wrap"><div className="empty">Loading…</div></div>;
+  if (auth === 'needed') return <Login onDone={loadCsms} />;
+  if (auth.startsWith('error:')) return <div className="wrap"><div className="empty">{auth.slice(6)}</div></div>;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -193,86 +246,83 @@ export default function Page() {
           <div className="brand">
             Onya <span>· End of Day</span>
           </div>
-          <Seg options={['EOD', 'Data we need']} value={tab === 'form' ? 'EOD' : 'Data we need'} onChange={(x) => x && setTab(x === 'EOD' ? 'form' : 'map')} className="tabs" />
           <div className="spacer" />
           <div className="csm-pick">
             <select value={csm} onChange={(e) => setCsm(e.target.value)} aria-label="CSM">
-              {CSMS.map((c) => (
+              <option value="">Who are you?</option>
+              {csms.map((c) => (
                 <option key={c}>{c}</option>
               ))}
             </select>
-            <span className="meta">Mon, Nov 23</span>
+            <span className="meta">{fmtDate(today)}</span>
           </div>
         </div>
       </div>
 
-      <AnimatePresence mode="wait" initial={false}>
-        {tab === 'map' ? (
-          <motion.div key="map" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.22 }}>
-            <DataMap />
-          </motion.div>
-        ) : (
-          <motion.div key={'form-' + csm} className="wrap" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.22 }}>
-            <div className="intro">
-              <p className="note">
-                Prefilled from today’s calls and texts. Check each card and fix anything that’s wrong.
-                <span className="dot-ai" style={{ marginLeft: 6 }} /> = filled in for you.
-              </p>
-              <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
-            </div>
+      {!csm ? (
+        <div className="wrap"><div className="empty">Pick your name to start.</div></div>
+      ) : (
+        <motion.div key={'form-' + csm} className="wrap" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22 }}>
+          <div className="intro">
+            <p className="note">
+              Everyone you talked to today. Check each card and fix anything that’s wrong.
+              <span className="dot-ai" style={{ marginLeft: 6 }} /> = filled in for you.
+            </p>
+            <button className="btn" disabled={roster.loading} onClick={() => setAdding({})}>+ Add a client</button>
+          </div>
+          {roster.error && <div className="alert bad">Couldn’t load your clients from Airtable: {roster.error}</div>}
 
-            {sections.map(({ sec, list, done, complete }) => (
-              <section key={sec.id} id={'sec-' + sec.id} className={`sec ${openSec === sec.id ? 'is-open' : ''} ${complete ? 'is-done' : ''}`}>
-                <button className="sec-h" onClick={() => setOpenSec(openSec === sec.id ? null : sec.id)} aria-expanded={openSec === sec.id}>
-                  <motion.span className="chev" animate={{ rotate: openSec === sec.id ? 90 : 0 }} transition={SPRING}>›</motion.span>
-                  <span className="sec-title">{sec.title}</span>
-                  <span className="sec-count">{list.length}</span>
-                  <span className="spacer" />
-                  <AnimatePresence mode="popLayout" initial={false}>
-                    {complete ? (
-                      <motion.span key="done" className="sec-done" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }} transition={SPRING}>
-                        ✓ Done
-                      </motion.span>
-                    ) : (
-                      <motion.span key="prog" className="sec-prog" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                        {done}/{list.length} checked
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
-                </button>
-                <Drawer open={openSec === sec.id}>
-                  <div className="sec-b">
-                    {list.map((t) => (
-                      <Card
-                        key={t.id}
-                        t={t}
-                        sec={sec}
-                        c={cards[t.id]}
-                        setValue={(k, v) => setValue(t.id, k, v)}
-                        patch={(p) => update(t.id, (c) => ({ ...c, ...p }))}
-                        setFlag={(k, p) => update(t.id, (c) => ({ ...c, flags: { ...c.flags, [k]: { ...(c.flags[k] || {}), ...p } } }))}
-                        onSeen={() => update(t.id, (c) => (c.seenAt ? c : { ...c, seenAt: Date.now() }))}
-                        onConfirm={() => confirmCard(t)}
-                        onRemove={t.manual ? () => removeTouch(t.id) : null}
-                      />
-                    ))}
-                  </div>
-                </Drawer>
-              </section>
-            ))}
-            {touches.length === 0 && <div className="empty">No calls or texts synced for {csm} today. (Demo data is only loaded for Tristan and Jack.)</div>}
+          {sections.map(({ sec, list, done, complete }) => (
+            <section key={sec.id} id={'sec-' + sec.id} className={`sec ${openSec === sec.id ? 'is-open' : ''} ${complete ? 'is-done' : ''}`}>
+              <button className="sec-h" onClick={() => setOpenSec(openSec === sec.id ? null : sec.id)} aria-expanded={openSec === sec.id}>
+                <motion.span className="chev" animate={{ rotate: openSec === sec.id ? 90 : 0 }} transition={SPRING}>›</motion.span>
+                <span className="sec-title">{sec.title}</span>
+                <span className="sec-count">{list.length}</span>
+                <span className="spacer" />
+                <AnimatePresence mode="popLayout" initial={false}>
+                  {complete ? (
+                    <motion.span key="done" className="sec-done" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }} transition={SPRING}>
+                      ✓ Done
+                    </motion.span>
+                  ) : (
+                    <motion.span key="prog" className="sec-prog" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                      {done}/{list.length} checked
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </button>
+              <Drawer open={openSec === sec.id}>
+                <div className="sec-b">
+                  {list.map((t) => (
+                    <Card
+                      key={t.id}
+                      t={t}
+                      sec={sec}
+                      c={cards[t.id]}
+                      today={today}
+                      csm={csm}
+                      setValue={(k, v) => setValue(t.id, k, v)}
+                      patch={(p) => update(t.id, (c) => ({ ...c, ...p }))}
+                      setFlag={(k, p) => update(t.id, (c) => ({ ...c, flags: { ...c.flags, [k]: { ...(c.flags[k] || {}), ...p } } }))}
+                      onSeen={() => update(t.id, (c) => (c.seenAt ? c : { ...c, seenAt: Date.now() }))}
+                      onConfirm={() => confirmCard(t)}
+                      onRemove={t.manual ? () => removeTouch(t.id) : null}
+                    />
+                  ))}
+                </div>
+              </Drawer>
+            </section>
+          ))}
+          {touches.length === 0 && <div className="empty">No calls or texts synced for you today yet. Use “+ Add a client” for anyone you talked to.</div>}
 
-            <Untouched list={attention} onLog={(id) => setAdding({ preselect: id })} />
+          <div className="add-row bottom">
+            <button className="btn" disabled={roster.loading} onClick={() => setAdding({})}>+ Add a client</button>
+            <span className="meta">Talked to someone who isn’t listed? Add them.</span>
+          </div>
+        </motion.div>
+      )}
 
-            <div className="add-row bottom">
-              <button className="btn" onClick={() => setAdding({})}>+ Add a client</button>
-              <span className="meta">Talked to someone who isn’t listed? Add them.</span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {tab === 'form' && (
+      {csm && (
         <div className="bar">
           <div className="bar-inner">
             <div className="progress">
@@ -283,7 +333,7 @@ export default function Page() {
                 <motion.div className="fill" initial={false} animate={{ width: `${pct}%` }} transition={SPRING} />
               </div>
             </div>
-            <AnimatePresence>{submittedAt && <motion.span className="meta" initial={{ opacity: 0, x: 6 }} animate={{ opacity: 1, x: 0 }}>✓ Submitted</motion.span>}</AnimatePresence>
+            <AnimatePresence>{result?.ok && <motion.span className="meta" initial={{ opacity: 0, x: 6 }} animate={{ opacity: 1, x: 0 }}>✓ Submitted</motion.span>}</AnimatePresence>
             <motion.button whileTap={{ scale: 0.97 }} className="btn primary" disabled={touches.length === 0} onClick={() => setReview(true)}>
               {confirmedCount < touches.length ? 'Preview' : 'Review & submit'}
             </motion.button>
@@ -292,21 +342,18 @@ export default function Page() {
       )}
 
       <AnimatePresence>
-        {adding && (
-          <AddClient key="add" csm={csm} preselect={adding.preselect} already={new Set(touches.map((t) => t.memberId || t.id))} onAdd={addTouch} onClose={() => setAdding(null)} />
-        )}
+        {adding && <AddClient key="add" csm={csm} members={roster.members} already={new Set(touches.map((t) => t.memberId))} onAdd={addTouch} onClose={() => setAdding(null)} />}
         {review && (
           <Review
             key="review"
-            allWrites={allWrites}
+            plans={plans}
             cards={cards}
-            openedAt={state.openedAt}
+            openedAt={openedAt}
+            today={today}
             canSubmit={confirmedCount === touches.length && touches.length > 0}
+            result={result}
             onClose={() => setReview(false)}
-            onSubmit={() => {
-              setSubmittedAt(Date.now());
-              setReview(false);
-            }}
+            onSubmit={submit}
             csm={csm}
           />
         )}
@@ -317,7 +364,7 @@ export default function Page() {
 
 /* ---------- Card ---------- */
 
-function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onConfirm, onRemove }) {
+function Card({ t, sec, c, today, csm, setValue, patch, setFlag, onSeen, onConfirm, onRemove }) {
   const ref = useRef(null);
   useEffect(() => {
     if (!ref.current || c?.seenAt) return;
@@ -329,11 +376,11 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onConfirm, onRemove
   if (!c) return null;
   const v = c.values;
   const ai = (k) => c.prov[k] === 'ai' && v[k] !== '' && v[k] != null;
-  const questions = buildQuestions(sec, t, v);
-  const missing = missingRequired(sec, t, v);
-  const compliance = complianceAlerts(sec, t, v);
+  const questions = buildQuestions(sec, t.member, v);
+  const missing = missingRequired(sec, t.member, v);
+  const compliance = complianceAlerts(sec, t.member, v);
   const activeFlags = ADDONS.filter((f) => c.flags[f.key]?.on);
-  const canAdd = (a) => !c.flags[a.key]?.on && (!a.onlyAfterFirstSale || t.current.journey?.firstSale);
+  const canAdd = (a) => !c.flags[a.key]?.on && (!a.onlyAfterFirstSale || t.member.journey?.firstSale);
   const h = healthOf(v.health);
 
   return (
@@ -372,11 +419,11 @@ function Card({ t, sec, c, setValue, patch, setFlag, onSeen, onConfirm, onRemove
               </button>
             </div>
           </div>
-          <HealthPicker value={v.health} ai={ai('health')} was={t.current.health} onChange={(n) => setValue('health', n)} />
+          <HealthPicker value={v.health} ai={ai('health')} was={t.member.health} onChange={(n) => setValue('health', n)} />
         </div>
 
         <Drawer open={c.showDetails}>
-          <Details t={t} sec={sec} c={c} />
+          <Details t={t} sec={sec} c={c} today={today} csm={csm} />
         </Drawer>
 
         <div className="card-b">
@@ -631,25 +678,26 @@ function HealthPicker({ value, ai, was, onChange }) {
         {ai && <span className="dot-ai" />}
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.span key={cur?.label || 'none'} style={{ color: cur?.color }} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
-            {cur ? cur.label : 'Health?'}
+            {cur ? `DEFCON ${cur.v} · ${cur.label}` : 'DEFCON?'}
           </motion.span>
         </AnimatePresence>
-        {was && Number(was) !== Number(value) && <span className="muted"> (was {healthOf(was)?.label})</span>}
+        {was && Number(was) !== Number(value) && <span className="muted"> (was {was})</span>}
       </div>
       <div className="hp-row">
         {HEALTH.map((h) => (
-          <button key={h.v} title={`${h.v} · ${h.label}`} onClick={() => onChange(h.v)} className={Number(value) === h.v ? 'on' : ''} style={{ '--c': h.color }}>
+          <button key={h.v} title={`DEFCON ${h.v} · ${h.label}: ${h.help}`} onClick={() => onChange(h.v)} className={Number(value) === h.v ? 'on' : ''} style={{ '--c': h.color }}>
             {Number(value) === h.v && <motion.span layoutId={'hp' + id} className="hp-pill" style={{ background: h.color }} transition={SPRING} />}
             <span className="hp-n">{h.v}</span>
           </button>
         ))}
       </div>
+      {cur && <div className="hp-help">{cur.help}</div>}
     </div>
   );
 }
 
-function Details({ t, sec, c }) {
-  const writes = computeWrites(sec, t, c.values, c.flags);
+function Details({ t, sec, c, today, csm }) {
+  const plan = planCard(sec, t.member, c.values, c.flags, { csm, date: today });
   return (
     <div className="details">
       <div className="d-col">
@@ -668,52 +716,15 @@ function Details({ t, sec, c }) {
       </div>
       <div className="d-col">
         <div className="d-h">Will update in Airtable</div>
-        {writes.filter((w) => w.kind !== 'skip').map((w, i) => (
+        {plan.updates.map((u, i) => (
           <div key={i} className="small">
-            <span className="muted">{w.table === 'Members' ? '' : w.table + ' · '}{w.field}:</span> {String(w.to)}
+            <span className="muted">{u.field}:</span> {String(u.to)}
           </div>
         ))}
+        {plan.comment && <div className="small"><span className="muted">Comment:</span> {plan.comment}</div>}
+        {!plan.updates.length && !plan.comment && <div className="small muted">Nothing yet.</div>}
       </div>
     </div>
-  );
-}
-
-/* ---------- Untouched ---------- */
-
-const LEVEL = { 3: ['Overdue', 'bad'], 2: ['Touch today', 'warn'], 1: ['Due tomorrow', 'soon'] };
-
-function Untouched({ list, onLog }) {
-  const [open, setOpen] = useState(true);
-  if (!list?.length) return null;
-  return (
-    <section className={`sec attention ${open ? 'is-open' : ''}`}>
-      <button className="sec-h" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <motion.span className="chev" animate={{ rotate: open ? 90 : 0 }} transition={SPRING}>›</motion.span>
-        <span className="sec-title">Needs attention</span>
-        <span className="sec-count">{list.length}</span>
-        <span className="spacer" />
-        <span className="sec-prog">Not contacted today · {TOUCH_RULE.perWeek}/week, max {TOUCH_RULE.maxGapDays} days apart</span>
-      </button>
-      <Drawer open={open}>
-        <div className="untouched">
-          {list.map((u, i) => {
-            const hh = healthOf(u.current.health);
-            const [lvl, cls] = LEVEL[u.status.level];
-            return (
-              <motion.div className="row" key={u.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ ...DRAWER, delay: i * 0.04 }}>
-                <span className={`lvl ${cls}`}>{lvl}</span>
-                <span className="hdot" style={{ background: hh?.color }} title={hh?.label} />
-                <b>{u.name}</b>
-                <span className="meta">{u.status.week}/{TOUCH_RULE.perWeek} this week</span>
-                <span className="reasons">{u.status.reasons.join(' · ')}</span>
-                <span className="spacer" />
-                <button className="link" onClick={() => onLog(u.id)}>Log a touch</button>
-              </motion.div>
-            );
-          })}
-        </div>
-      </Drawer>
-    </section>
   );
 }
 
@@ -728,232 +739,157 @@ const ADD_TYPES = [
   ['outreach', 'Reached out, no response'],
 ];
 
-function AddClient({ csm, preselect, already, onAdd, onClose }) {
+function AddClient({ csm, members, already, onAdd, onClose }) {
   const [q, setQ] = useState('');
-  const [all, setAll] = useState(false);
-  const [picked, setPicked] = useState(() => ROSTER.find((m) => m.id === preselect) || null);
+  const [picked, setPicked] = useState(null);
   const [type, setType] = useState('');
-  const list = ROSTER.filter((m) => (all || m.csm === csm) && !already.has(m.id))
-    .filter((m) => !q || `${m.name} ${m.business}`.toLowerCase().includes(q.toLowerCase()));
+  const list = members.filter((m) => !already.has(m.id)).filter((m) => !q || `${m.name} ${m.business}`.toLowerCase().includes(q.toLowerCase()));
 
   return (
     <Modal onClose={onClose} narrow>
-        <h3>Add a client</h3>
-        <div className="meta">For a conversation that didn’t sync from GHL or Fathom.</div>
+      <h3>Add a client</h3>
+      <div className="meta">One of your clients you talked to today who isn’t listed.</div>
 
-        {!picked ? (
-          <>
-            <input className="search" autoFocus placeholder="Search name or business…" value={q} onChange={(e) => setQ(e.target.value)} />
-            <label className="meta check">
-              <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> Show members assigned to other CSMs
-            </label>
-            <div className="pick-list">
-              {list.map((m) => (
-                <button key={m.id} className="pick" onClick={() => setPicked(m)}>
-                  <b>{m.name}</b> <span className="muted">{m.business}</span>
-                  {m.csm !== csm && <span className="pill manual">{m.csm}</span>}
-                </button>
-              ))}
-              {list.length === 0 && <div className="meta" style={{ padding: 10 }}>No matches. Not in Airtable? That’s a sales→CS handoff issue. Flag it to ops.</div>}
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="picked">
-              <b>{picked.name}</b> <span className="muted">{picked.business}</span>
-              {picked.csm !== csm && <span className="pill manual">{picked.csm}’s client</span>}
-              <span className="spacer" />
-              {!preselect && <button className="link" onClick={() => setPicked(null)}>change</button>}
-            </div>
-            <div className="meta" style={{ margin: '12px 0 6px' }}>What kind of conversation?</div>
-            <div className="type-grid">
-              {ADD_TYPES.map(([id, label]) => (
-                <button key={id} className={`chip ${type === id ? 'on' : ''}`} onClick={() => setType(id)}>{label}</button>
-              ))}
-            </div>
-          </>
-        )}
+      {!picked ? (
+        <>
+          <input className="search" autoFocus placeholder="Search name or business…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div className="pick-list">
+            {list.map((m) => (
+              <button key={m.id} className="pick" onClick={() => { setPicked(m); setType(m.phase ? ADD_DEFAULT[callTypeFor(m)] || '' : ''); }}>
+                <b>{m.name}</b> <span className="muted">{m.business}</span>
+                {m.phase && <span className="pill manual">{m.phase}</span>}
+              </button>
+            ))}
+            {list.length === 0 && <div className="meta" style={{ padding: 10 }}>No matches in your clients. Not in Airtable, or assigned to someone else? Flag it to ops.</div>}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="picked">
+            <b>{picked.name}</b> <span className="muted">{picked.business}</span>
+            <span className="spacer" />
+            <button className="link" onClick={() => setPicked(null)}>change</button>
+          </div>
+          <div className="meta" style={{ margin: '12px 0 6px' }}>What kind of conversation?</div>
+          <div className="type-grid">
+            {ADD_TYPES.map(([id, label]) => (
+              <button key={id} className={`chip ${type === id ? 'on' : ''}`} onClick={() => setType(id)}>{label}</button>
+            ))}
+          </div>
+        </>
+      )}
 
-        <div className="modal-f">
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={!picked || !type} onClick={() => onAdd(picked, type)}>Add card</button>
-        </div>
+      <div className="modal-f">
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn primary" disabled={!picked || !type} onClick={() => onAdd(picked, type)}>Add card</button>
+      </div>
     </Modal>
   );
 }
 
+const ADD_DEFAULT = { onboarding: 'onboarding', prelaunch: 'prelaunch', launch: 'launch', checkin: 'checkin' };
+
 /* ---------- Review ---------- */
 
-function Review({ allWrites, cards, openedAt, canSubmit, onClose, onSubmit, csm }) {
-  const total = allWrites.reduce((n, x) => n + x.writes.filter((w) => w.kind !== 'skip').length, 0);
+const ST = { written: ['✓', 'ok'], failed: ['✗ failed', 'bad'], skipped: ['skipped', 'muted'], preview: ['preview only', 'muted'], warning: ['!', 'warn'] };
+
+function Review({ plans, cards, openedAt, today, canSubmit, result, onClose, onSubmit, csm }) {
+  const done = result && (result.ok || result.pending);
+  const total = plans.reduce((n, x) => n + (x.plan ? x.plan.updates.length + (x.plan.comment ? 1 : 0) : 0), 0);
   const now = Date.now();
-  const timing = allWrites.map(({ t }) => {
+  const timing = plans.map(({ t }) => {
     const c = cards[t.id];
     const ms = c.confirmedAt && c.seenAt ? c.confirmedAt - c.seenAt : null;
-    return { name: t.name, manual: t.manual, ms, edits: c.edits, confirmed: c.confirmed, quick: c.confirmed && ms != null && ms < QUICK_MS && c.edits === 0 };
+    return { id: t.id, name: t.name, manual: t.manual, ms, edits: c.edits, confirmed: c.confirmed, quick: c.confirmed && ms != null && ms < QUICK_MS && c.edits === 0 };
   });
   const quick = timing.filter((x) => x.quick).length;
-  const manual = allWrites.filter(({ t }) => t.manual).length;
+  const manual = plans.filter(({ t }) => t.manual).length;
   const edits = timing.reduce((n, x) => n + x.edits, 0);
+  const byMember = result?.results ? Object.fromEntries(result.results.map((r) => [r.memberId, r])) : null;
 
   return (
     <Modal onClose={onClose}>
-        <h3>{canSubmit ? 'Submit your EOD' : 'Preview'}</h3>
-        <div className="meta">
-          {total} Airtable updates across {allWrites.length} members, plus 1 EOD log row for {csm} ({fmtDate(TODAY)}).
-          {!canSubmit && ' Check every card to submit.'}
+      <h3>{result?.ok ? 'Submitted' : canSubmit ? 'Submit your EOD' : 'Preview'}</h3>
+      <div className="meta">
+        {result?.ok
+          ? result.live
+            ? `Saved. EOD log: ${result.eod?.status}${result.eod?.warning ? ` (${result.eod.warning})` : ''}${result.eod?.error ? ` (${result.eod.error})` : ''}.`
+            : 'Preview mode: nothing was written to Airtable.'
+          : `${total} Airtable changes across ${plans.length} clients, plus your EOD log row for ${fmtDate(today)}.${canSubmit ? '' : ' Check every card to submit.'}`}
+      </div>
+      {result?.error && <div className="alert bad">{result.error}</div>}
+      {result?.duplicate && (
+        <div className="alert bad">
+          You already submitted an EOD today. Submitting again re-writes the fields, adds the comments again, and updates today’s log row.{' '}
+          <button className="link" onClick={() => onSubmit(true)}>Submit again anyway</button>
         </div>
+      )}
 
-        {allWrites.map(({ t, writes }) => (
+      {plans.map(({ t, plan }) => {
+        const res = byMember?.[t.memberId];
+        const rows = res
+          ? res.ops || [{ field: '(card)', to: res.error, status: 'failed' }]
+          : [
+              ...plan.updates.map((u) => ({ field: u.field, from: u.from, to: u.to })),
+              ...plan.skips.map((s) => ({ field: s.field, to: s.to, status: 'skipped', note: s.reason })),
+              ...(plan.comment ? [{ field: 'Comment', to: plan.comment }] : []),
+            ];
+        return (
           <div className="grp writes" key={t.id}>
             <h4>{t.name}</h4>
             <table>
               <tbody>
-                {writes.map((w, i) => (
-                  <tr key={i} className={w.kind === 'skip' ? 'skipped' : ''}>
-                    <td style={{ width: '34%' }}>
-                      {w.table !== 'Members' && <span className="muted">{w.table} · </span>}
-                      {w.field}
-                    </td>
+                {rows.map((w, i) => (
+                  <tr key={i} className={w.status === 'skipped' ? 'skipped' : ''}>
+                    <td style={{ width: '30%' }}>{w.field}</td>
                     <td>
                       {w.from && w.from !== w.to && <span className="from">{String(w.from)}</span>}
                       {String(w.to)}
-                      {w.note && <span className="muted"> — {w.note}</span>}
+                      {w.note && <span className="muted"> ({w.note})</span>}
+                      {w.error && <div className="bad-t small">{w.error}</div>}
                     </td>
-                    <td style={{ width: 150, textAlign: 'right' }}>
-                      {w.kind === 'create' && <span className="st create">new row</span>}{' '}
-                      {w.kind === 'comment' && <span className="st comment">comment</span>}{' '}
-                      {w.status === 'new' && <span className="st new">new field</span>}{' '}
-                      {w.status === 'options' && <span className="st options">new options</span>}{' '}
-                      {w.viktor && <span className="st viktor">viktor</span>}
-                    </td>
+                    <td style={{ width: 110, textAlign: 'right' }}>{w.status && <span className={`st ${ST[w.status]?.[1]}`}>{ST[w.status]?.[0]}</span>}</td>
                   </tr>
                 ))}
+                {!rows.length && (
+                  <tr><td className="muted" colSpan={3}>No changes.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
-        ))}
+        );
+      })}
 
-        <div className="admin">
-          <div className="admin-h">Behind the scenes (admin only, the CSM never sees this)</div>
-          <div className="admin-stats">
-            <span>Time on form: <b>{secs(now - openedAt)}</b></span>
-            <span>AI values changed: <b>{edits}</b></span>
-            <span>Quick confirms (&lt;{QUICK_MS / 1000}s, no edits): <b className={quick ? 'bad-t' : ''}>{quick}</b></span>
-            <span>Added by hand (missed by sync): <b className={manual ? 'bad-t' : ''}>{manual}</b></span>
-          </div>
-          <table>
-            <tbody>
-              {timing.map((x) => (
-                <tr key={x.name}>
-                  <td>{x.name}{x.manual && <span className="muted"> · added by hand</span>}</td>
-                  <td>{x.confirmed ? secs(x.ms) : 'not checked'}</td>
-                  <td>{x.edits} edit{x.edits === 1 ? '' : 's'}</td>
-                  <td style={{ textAlign: 'right' }}>{x.quick && <span className="st viktor">quick confirm</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="admin">
+        <div className="admin-h">Behind the scenes (admin only)</div>
+        <div className="admin-stats">
+          <span>Time on form: <b>{secs(now - openedAt)}</b></span>
+          <span>AI values changed: <b>{edits}</b></span>
+          <span>Quick confirms (&lt;{QUICK_MS / 1000}s, no edits): <b className={quick ? 'bad-t' : ''}>{quick}</b></span>
+          <span>Added by hand (missed by sync): <b className={manual ? 'bad-t' : ''}>{manual}</b></span>
         </div>
-
-        <div className="modal-f">
-          <button className="btn" onClick={onClose}>Back</button>
-          <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>Submit EOD</button>
-        </div>
-    </Modal>
-  );
-}
-
-/* ---------- Data map ---------- */
-
-function DataMap() {
-  const label = { exists: 'existing field', options: 'add options', comment: 'comment', eod: 'EOD Check-ins', supabase: 'Supabase' };
-  const n = (s) => DATA_MAP.filter((r) => r[3] === s).length;
-  const order = Object.keys(STEPS);
-  return (
-    <div className="wrap map">
-      <p className="note">
-        What the real build needs. Airtable changes are kept to the minimum: two new Health Status options and five fields on the existing EOD Check-ins table. No new Members fields, no new tables. Everything else uses existing fields or a comment on the record.
-      </p>
-
-      <h2>How the prefill works</h2>
-      <div className="flow">
-        <div className="node">GHL webhooks<small>SMS, calls, calendar</small></div>
-        <span className="arr">+</span>
-        <div className="node">Fathom webhook<small>recording + transcript</small></div>
-        <span className="arr">→</span>
-        <div className="node">Touch store<small>matched to Member + CSM</small></div>
-        <span className="arr">→</span>
-        <div className="node">AI extraction<small>outcome, next step, sale, pitches, gaps</small></div>
-        <span className="arr">→</span>
-        <div className="node">EOD form<small>CSM checks each card</small></div>
-        <span className="arr">→</span>
-        <div className="node">Airtable<small>Members + related tables + EOD log</small></div>
-      </div>
-
-      <h2>Which questions show up</h2>
-      <p className="small muted">
-        Every card asks outcome, next step, due and health. Pitch and sale questions are asked every time for their call type. A journey step that should be done by this call but has no date in Airtable becomes a question. If the date is already there, the question doesn’t show.
-      </p>
-      <div className="tablewrap">
         <table>
-          <thead>
-            <tr>
-              <th>Call type</th>
-              <th>Always asked</th>
-              <th>Asked only if missing in Airtable</th>
-            </tr>
-          </thead>
           <tbody>
-            <tr><td><b>Onboarding</b></td><td>Pitched SEO/AEO? → result</td><td>—</td></tr>
-            <tr><td><b>Pre-launch</b></td><td>—</td><td>{EXPECTED.prelaunch.map((k) => STEPS[k].label).join(', ')}</td></tr>
-            <tr><td><b>Launch</b></td><td>Pitched Affirm? → result · Marketing go-live date</td><td>{EXPECTED.launch.map((k) => STEPS[k].label).join(', ')}</td></tr>
-            <tr><td><b>Check-in</b></td><td>First sale yet? → date, $ job, $ collected (only until a first sale is on record). Everything else is optional via “+ Add”.</td><td>{EXPECTED.checkin.map((k) => STEPS[k].label).join(', ')}, then first appointment booked / held once a first lead exists</td></tr>
-            <tr><td><b>Texts / phone</b></td><td>First sale yet? (only until one is on record)</td><td>Same as the member’s current stage</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <p className="small muted">Journey order: {order.map((k) => STEPS[k].label).join(' → ')}</p>
-
-      <h2>Data points</h2>
-      <div className="tablewrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Data point</th>
-              <th>Source</th>
-              <th>Where it goes</th>
-              <th>Status</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            {DATA_MAP.map((r, i) => (
-              <tr key={i}>
-                <td><b>{r[0]}</b></td>
-                <td>{r[1]}</td>
-                <td>{r[2]}</td>
-                <td><span className={`st ${r[3]}`}>{label[r[3]]}</span></td>
-                <td>{r[4]}</td>
+            {timing.map((x) => (
+              <tr key={x.id}>
+                <td>{x.name}{x.manual && <span className="muted"> · added by hand</span>}</td>
+                <td>{x.confirmed ? secs(x.ms) : 'not checked'}</td>
+                <td>{x.edits} edit{x.edits === 1 ? '' : 's'}</td>
+                <td style={{ textAlign: 'right' }}>{x.quick && <span className="st viktor">quick confirm</span>}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      <h2>Decided</h2>
-      <ul>
-        {DECISIONS.map((q, i) => (
-          <li key={i}>{q}</li>
-        ))}
-      </ul>
-
-      <h2>Open questions</h2>
-      <ol>
-        {OPEN_QUESTIONS.map((q, i) => (
-          <li key={i}>{q}</li>
-        ))}
-      </ol>
-    </div>
+      <div className="modal-f">
+        <button className="btn" onClick={onClose}>{result?.ok ? 'Close' : 'Back'}</button>
+        {!result?.ok && (
+          <button className="btn primary" disabled={!canSubmit || done} onClick={() => onSubmit(false)}>
+            {result?.pending ? 'Submitting…' : 'Submit EOD'}
+          </button>
+        )}
+      </div>
+    </Modal>
   );
 }
