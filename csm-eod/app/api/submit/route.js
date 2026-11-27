@@ -117,9 +117,12 @@ async function writeEodRow({ csm, date, reference, existing, results: all, stats
   };
   const text = (id) => bySec(id).map(line).join('\n');
   const fires = results.filter((r) => !r.error && (Number(r.values.health) <= 2 || r.ops.some((o) => o.field === 'Comment' && /Refund|Escalation/.test(o.to))));
-  const upsells = results.flatMap((r) => (r.error ? [] : r.ops.filter((o) => o.field === 'Comment').flatMap((o) => o.to.split(' · ').filter((x) => /Sold|Upsell sold/.test(x)).map((x) => `${r.name}: ${x}`))));
+  // Every line that names a member also carries the outcome. last-touch-sync (onyaroof repo) reads this table and
+  // treats a line with the member's name as proof a booked call happened unless the line says no-show / rescheduled / etc.
+  const tag = (r) => `${r.name} (${r.values.outcome || 'no outcome'})`;
+  const upsells = results.flatMap((r) => (r.error ? [] : r.ops.filter((o) => o.field === 'Comment').flatMap((o) => o.to.split(' · ').filter((x) => /Sold|Upsell sold/.test(x)).map((x) => `${tag(r)}: ${x}`))));
   const log = results
-    .map((r) => (r.error ? `${r.name}: ${r.error}` : [`${r.name}${r.manual ? ' (added by hand)' : ''}`, ...r.ops.map((o) => `  ${o.status === 'written' ? '✓' : o.status === 'failed' ? '✗' : '·'} ${o.field}: ${o.to}${o.status === 'skipped' ? ` (skipped: ${o.note})` : ''}${o.status === 'failed' ? ` (FAILED: ${o.error})` : ''}${o.status === 'preview' ? ' (preview only)' : ''}${o.status === 'warning' ? ` (${o.note})` : ''}`)].join('\n')))
+    .map((r) => (r.error ? `${r.name}: ${r.error}` : [`${tag(r)}${r.manual ? ' · added by hand' : ''}`, ...r.ops.map((o) => `  ${o.status === 'written' ? '✓' : o.status === 'failed' ? '✗' : '·'} ${o.field}: ${o.to}${o.status === 'skipped' ? ` (skipped: ${o.note})` : ''}${o.status === 'failed' ? ` (FAILED: ${o.error})` : ''}${o.status === 'preview' ? ' (preview only)' : ''}${o.status === 'warning' ? ` (${o.note})` : ''}`)].join('\n')))
     .join('\n');
 
   const test = process.env.EOD_TEST_MODE === '1';
@@ -135,7 +138,7 @@ async function writeEodRow({ csm, date, reference, existing, results: all, stats
     [E.reachOuts]: [...bySec('comms'), ...bySec('outreach')].map(line).join('\n'),
     [E.fires]: fires.map(line).join('\n'),
     [E.upsells]: upsells.join('\n'),
-    [E.actionItems]: results.filter((r) => !r.error && r.values.nextStep).map((r) => `${r.name}: ${r.values.nextStep}${r.values.nextDue ? ` (${r.values.nextDue})` : ''}`).join('\n'),
+    [E.actionItems]: results.filter((r) => !r.error && r.values.nextStep).map((r) => `${tag(r)}: ${r.values.nextStep}${r.values.nextDue ? ` (${r.values.nextDue})` : ''}`).join('\n'),
     [E.obCompleted]: bySec('onboarding').filter((r) => r.values.outcome === 'Onboarded').length,
   };
   const extra = {
