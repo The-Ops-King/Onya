@@ -370,3 +370,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .st.bad { background: var(--bad-bg); color: var(--bad); }
 .st.warn { background: var(--warn-bg); color: var(--warn); }
 .st.muted { background: var(--panel-2); color: var(--ink-3); }
+.who-h { font-size: 17px; margin: 8px 0 14px; }
+.csm-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.csm-btn { padding: 16px 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); font-weight: 600; font-size: 15px; cursor: pointer; text-align: left; }
+.csm-btn:hover { border-color: var(--accent); }

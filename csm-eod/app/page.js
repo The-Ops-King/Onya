@@ -248,19 +248,28 @@ export default function Page() {
           </div>
           <div className="spacer" />
           <div className="csm-pick">
-            <select value={csm} onChange={(e) => setCsm(e.target.value)} aria-label="CSM">
-              <option value="">Who are you?</option>
-              {csms.map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
+            {csm && (
+              <>
+                <b>{csm}</b>
+                <button className="link" onClick={() => { try { localStorage.removeItem('eod-csm'); } catch {} setCsm(''); }}>switch</button>
+              </>
+            )}
             <span className="meta">{fmtDate(today)}</span>
           </div>
         </div>
       </div>
 
       {!csm ? (
-        <div className="wrap"><div className="empty">Pick your name to start.</div></div>
+        <div className="wrap">
+          <h2 className="who-h">Who’s filling this out?</h2>
+          <div className="csm-list">
+            {csms.map((c, i) => (
+              <motion.button key={c} className="csm-btn" onClick={() => setCsm(c)} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ ...DRAWER, delay: i * 0.03 }} whileTap={{ scale: 0.97 }}>
+                {c}
+              </motion.button>
+            ))}
+          </div>
+        </div>
       ) : (
         <motion.div key={'form-' + csm} className="wrap" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22 }}>
           <div className="intro">
